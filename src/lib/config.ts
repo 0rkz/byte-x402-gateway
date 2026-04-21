@@ -16,6 +16,10 @@ export const config = {
   network: (process.env.NETWORK || "eip155:421614") as `${string}:${string}`,
   /** Price per request in USD */
   requestPrice: process.env.REQUEST_PRICE || "0.001",
+  /** Solana wallet address (base58 public key) for receiving x402 payments */
+  solanaPayTo: process.env.SOLANA_PAY_TO || "",
+  /** CAIP-2 Solana network identifier (default: Solana mainnet) */
+  solanaNetwork: (process.env.SOLANA_NETWORK || "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp") as `${string}:${string}`,
   /** Data source cache TTL in milliseconds (env value is in seconds) */
   cacheTtl: parseInt(process.env.CACHE_TTL || "60", 10) * 1000,
   /** Optional CoinGecko API key for higher rate limits */

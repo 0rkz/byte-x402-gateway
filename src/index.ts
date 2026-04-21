@@ -17,6 +17,16 @@ import { fetchCryptoTop100 } from "./feeds/crypto.js";
 import { fetchDefiYields } from "./feeds/defi.js";
 import { fetchByteStatus } from "./feeds/status.js";
 
+// Solana support — conditionally loaded at startup
+let ExactSvmScheme: any = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const svm = require("@x402/svm/exact/server");
+  ExactSvmScheme = svm.ExactSvmScheme;
+} catch {
+  // @x402/svm not installed or import failed — Solana disabled
+}
+
 const app = express();
 
 // ---------------------------------------------------------------------------
@@ -29,33 +39,41 @@ const app = express();
  * intercepts requests and returns HTTP 402 with these terms when no valid
  * payment receipt is present.
  */
+/** Build the accepts array — EVM always, Solana if configured. */
+function buildAccepts() {
+  const accepts: any[] = [
+    {
+      scheme: "exact",
+      price: `$${config.requestPrice}`,
+      network: config.network,
+      payTo: config.payTo,
+    },
+  ];
+
+  // Add Solana payment option if wallet is configured
+  if (config.solanaPayTo && ExactSvmScheme) {
+    accepts.push({
+      scheme: "exact",
+      price: `$${config.requestPrice}`,
+      network: config.solanaNetwork,
+      payTo: config.solanaPayTo,
+    });
+  }
+
+  return accepts;
+}
+
 const paymentRoutes: Record<string, any> = {
   "GET /feeds/crypto-top100": {
-    accepts: {
-      scheme: "exact",
-      price: `$${config.requestPrice}`,
-      network: config.network,
-      payTo: config.payTo,
-    },
-    description:
-      "Top 25 crypto prices, market caps, 24h change from CoinGecko",
+    accepts: buildAccepts(),
+    description: "Top 25 crypto prices, market caps, 24h change from CoinGecko",
   },
   "GET /feeds/defi-yields": {
-    accepts: {
-      scheme: "exact",
-      price: `$${config.requestPrice}`,
-      network: config.network,
-      payTo: config.payTo,
-    },
+    accepts: buildAccepts(),
     description: "Top DeFi yields across major chains from DeFiLlama",
   },
   "GET /feeds/byte-status": {
-    accepts: {
-      scheme: "exact",
-      price: `$${config.requestPrice}`,
-      network: config.network,
-      payTo: config.payTo,
-    },
+    accepts: buildAccepts(),
     description: "Byte Protocol live status and metrics",
   },
 };
@@ -65,23 +83,29 @@ const paymentRoutes: Record<string, any> = {
  * Uses the HTTPFacilitatorClient for remote verification and the
  * ExactEvmScheme for EVM-compatible payment settlement.
  */
-function createResourceServer(): x402ResourceServer | null {
+// Payment middleware setup is deferred — facilitator may not be reachable.
+// Gateway runs in discovery mode (free feeds) until facilitator DNS resolves.
+async function setupPaymentMiddleware() {
   try {
     const facilitator = new HTTPFacilitatorClient({ url: config.facilitatorUrl });
-    return new x402ResourceServer(facilitator)
+    const server = new x402ResourceServer(facilitator)
       .register(config.network, new ExactEvmScheme());
-  } catch {
-    return null;
+
+    if (ExactSvmScheme && config.solanaPayTo) {
+      server.register(config.solanaNetwork, new ExactSvmScheme());
+      console.log(`[x402-gateway] Solana payments enabled: ${config.solanaNetwork}`);
+    }
+
+    app.use(paymentMiddleware(paymentRoutes, server, undefined, undefined, false));
+    console.log("[x402-gateway] Payment middleware active");
+  } catch (e) {
+    console.warn("[x402-gateway] Payment middleware disabled -- feeds served free in discovery mode");
+    console.warn(`[x402-gateway] Reason: ${e instanceof Error ? e.message : e}`);
   }
 }
 
-const resourceServer = createResourceServer();
-
-if (resourceServer) {
-  app.use(paymentMiddleware(paymentRoutes, resourceServer));
-} else {
-  console.warn("[x402-gateway] Payment middleware disabled -- feeds served free in discovery mode");
-}
+// Non-blocking — don't let facilitator failure prevent startup
+setupPaymentMiddleware().catch(() => {});
 
 // ---------------------------------------------------------------------------
 // Free Endpoints
@@ -89,11 +113,15 @@ if (resourceServer) {
 
 /** Feed discovery endpoint -- returns all available feeds with pricing and PQS scores. */
 app.get("/feeds", (_req, res) => {
+  const networks = [config.network];
+  if (config.solanaPayTo && ExactSvmScheme) networks.push(config.solanaNetwork);
+
   res.json({
     protocol: "Byte Protocol x402 Gateway",
-    version: "0.1.0",
-    network: config.network,
+    version: "0.2.0",
+    networks,
     facilitator: config.facilitatorUrl,
+    pricePerRequest: `$${config.requestPrice}`,
     feeds: feedRegistry,
   });
 });
@@ -147,8 +175,12 @@ app.get("/feeds/byte-status", async (_req, res) => {
 
 app.listen(config.port, () => {
   console.log(`[x402-gateway] Byte Protocol data feed gateway running on port ${config.port}`);
-  console.log(`[x402-gateway] Network: ${config.network}`);
-  console.log(`[x402-gateway] PayTo: ${config.payTo}`);
+  console.log(`[x402-gateway] EVM Network: ${config.network}`);
+  console.log(`[x402-gateway] EVM PayTo: ${config.payTo}`);
+  if (config.solanaPayTo && ExactSvmScheme) {
+    console.log(`[x402-gateway] Solana Network: ${config.solanaNetwork}`);
+    console.log(`[x402-gateway] Solana PayTo: ${config.solanaPayTo}`);
+  }
   console.log(`[x402-gateway] Price per request: $${config.requestPrice}`);
   console.log(`[x402-gateway] Facilitator: ${config.facilitatorUrl}`);
   console.log(`[x402-gateway] Feeds available: ${feedRegistry.length}`);
