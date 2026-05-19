@@ -39,14 +39,35 @@ const app = express();
  * intercepts requests and returns HTTP 402 with these terms when no valid
  * payment receipt is present.
  */
-/** Build the accepts array — EVM always, Solana if configured. */
+/**
+ * Build the accepts array — EVM always, Solana if configured.
+ *
+ * Uses explicit AssetAmount object for `price` instead of the "$0.001"
+ * dollar-string syntax. The dollar-string path requires the SDK's
+ * default-asset registry to know "what stablecoin is USD on chain X" — and
+ * Arbitrum Sepolia isn't upstreamed into that registry, so a string price
+ * would throw at startup. The AssetAmount form bypasses the registry by
+ * naming the token contract + atomic amount explicitly; works on any EVM
+ * chain regardless of upstream registry coverage.
+ *
+ * `extra.name` / `extra.version` give the facilitator the EIP-712 domain
+ * fields it needs to verify the EIP-3009 signature (Centre USDC uses
+ * `"USD Coin"` / `"2"`).
+ */
 function buildAccepts() {
   const accepts: any[] = [
     {
       scheme: "exact",
-      price: `$${config.requestPrice}`,
       network: config.network,
       payTo: config.payTo,
+      price: {
+        asset: config.usdcAddress,
+        amount: config.requestAmountAtomic,
+        extra: {
+          name: config.usdcDomainName,
+          version: config.usdcDomainVersion,
+        },
+      },
     },
   ];
 
@@ -54,7 +75,7 @@ function buildAccepts() {
   if (config.solanaPayTo && ExactSvmScheme) {
     accepts.push({
       scheme: "exact",
-      price: `$${config.requestPrice}`,
+      price: `$${Number(config.requestAmountAtomic) / 1_000_000}`,
       network: config.solanaNetwork,
       payTo: config.solanaPayTo,
     });
@@ -75,6 +96,10 @@ const paymentRoutes: Record<string, any> = {
   "GET /feeds/byte-status": {
     accepts: buildAccepts(),
     description: "Byte Protocol live status and metrics",
+  },
+  "POST /feeds/fact-query": {
+    accepts: buildAccepts(),
+    description: "Slashable factual question/answer — proxied to fact-oracle.payperbyte.io; answer delivered on-chain via DataStream broadcast to the subscriber",
   },
 };
 
@@ -121,7 +146,9 @@ app.get("/feeds", (_req, res) => {
     version: "0.2.0",
     networks,
     facilitator: config.facilitatorUrl,
-    pricePerRequest: `$${config.requestPrice}`,
+    pricePerRequest: `$${(Number(config.requestAmountAtomic) / 1_000_000).toFixed(4)}`,
+    pricePerRequestAtomic: config.requestAmountAtomic,
+    asset: config.usdcAddress,
     feeds: feedRegistry,
   });
 });
@@ -169,6 +196,35 @@ app.get("/feeds/byte-status", async (_req, res) => {
   }
 });
 
+/**
+ * Byte Fact Oracle — slashable factual Q&A.
+ *
+ * The gateway accepts an x402 payment, then forwards the question to
+ * fact-oracle.payperbyte.io. fact-oracle returns a 202 ack; the actual
+ * answer is delivered on-chain via DataStream.streamBroadcast to the
+ * subscriber address provided in the request body.
+ *
+ * Body: { question: string, subscriber_address: 0x..., max_byte_cost?: int }
+ *   - subscriber_address: where the on-chain answer is broadcast to
+ *   - max_byte_cost: optional cap on payload size (default 2000)
+ * 200: { request_id, est_eta_ms, publisher } (relayed from fact-oracle)
+ * Non-2xx from fact-oracle is forwarded with its body.
+ */
+app.post("/feeds/fact-query", async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const upstream = await fetch(`${config.factOracleUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await upstream.text();
+    res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+  } catch (err: any) {
+    res.status(502).json({ error: "fact-oracle proxy failed", detail: err.message });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
@@ -181,7 +237,9 @@ app.listen(config.port, () => {
     console.log(`[x402-gateway] Solana Network: ${config.solanaNetwork}`);
     console.log(`[x402-gateway] Solana PayTo: ${config.solanaPayTo}`);
   }
-  console.log(`[x402-gateway] Price per request: $${config.requestPrice}`);
+  console.log(`[x402-gateway] Price per request: ${config.requestAmountAtomic} atomic units ($${Number(config.requestAmountAtomic) / 1_000_000})`);
+  console.log(`[x402-gateway] USDC asset: ${config.usdcAddress} (domain="${config.usdcDomainName}" v${config.usdcDomainVersion})`);
+  console.log(`[x402-gateway] Facilitator: ${config.facilitatorUrl}`);
   console.log(`[x402-gateway] Facilitator: ${config.facilitatorUrl}`);
   console.log(`[x402-gateway] Feeds available: ${feedRegistry.length}`);
 });
