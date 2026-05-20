@@ -121,6 +121,15 @@ async function setupPaymentMiddleware() {
       console.log(`[x402-gateway] Solana payments enabled: ${config.solanaNetwork}`);
     }
 
+    // Fetch supported payment kinds from the facilitator. Without this the
+    // resource server has no supported-kinds cache, so buildPaymentRequirements
+    // throws "Facilitator does not support exact on eip155:421614" on every
+    // payable request — payable feeds 500 instead of returning a clean 402.
+    // Inside the try block on purpose: if the facilitator is unreachable at
+    // startup, this throws → catch → discovery mode (free feeds), which is the
+    // intended graceful-degradation behavior.
+    await server.initialize();
+
     app.use(paymentMiddleware(paymentRoutes, server, undefined, undefined, false));
     console.log("[x402-gateway] Payment middleware active");
   } catch (e) {
