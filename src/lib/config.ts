@@ -31,10 +31,9 @@ export const config = {
   /**
    * USDC contract address on the configured chain. Must implement EIP-3009
    * `transferWithAuthorization` for the "exact" scheme to settle.
-   * Pre-v0.6 §1 redeploy: point at a temp MockUSDC3009 deployment.
-   * Post-v0.6 §1: point at production MockUSDC3009 address.
+   * v0.6 §1 redeploy (2026-05-20): production MockUSDC3009 on Arbitrum Sepolia.
    */
-  usdcAddress: (process.env.USDC_ADDRESS || "0x93BfEbF99AF028ee57B138Fd17a26cAe76a01Fd2") as `0x${string}`,
+  usdcAddress: (process.env.USDC_ADDRESS || "0x1c16659aeb3aE28467E90348fAAB8874a0D3A4d3") as `0x${string}`,
   /** EIP-712 domain for the USDC contract — must match Centre USDC + MockUSDC3009. */
   usdcDomainName: process.env.USDC_DOMAIN_NAME || "USD Coin",
   usdcDomainVersion: process.env.USDC_DOMAIN_VERSION || "2",
