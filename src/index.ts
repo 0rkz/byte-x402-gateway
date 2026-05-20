@@ -110,6 +110,14 @@ const paymentRoutes: Record<string, any> = {
  */
 // Payment middleware setup is deferred — facilitator may not be reachable.
 // Gateway runs in discovery mode (free feeds) until facilitator DNS resolves.
+//
+// It is built asynchronously (must await the facilitator supported-kinds
+// fetch), but Express runs handlers in registration order — app.use()'ing it
+// after the route handlers would never gate them. Fix: a synchronous
+// pass-through wrapper is mounted before all routes (see below) and delegates
+// here once the real middleware is ready.
+let activePaymentMiddleware: ((req: any, res: any, next: any) => void) | null = null;
+
 async function setupPaymentMiddleware() {
   try {
     const facilitator = new HTTPFacilitatorClient({ url: config.facilitatorUrl });
@@ -130,7 +138,7 @@ async function setupPaymentMiddleware() {
     // intended graceful-degradation behavior.
     await server.initialize();
 
-    app.use(paymentMiddleware(paymentRoutes, server, undefined, undefined, false));
+    activePaymentMiddleware = paymentMiddleware(paymentRoutes, server, undefined, undefined, false);
     console.log("[x402-gateway] Payment middleware active");
   } catch (e) {
     console.warn("[x402-gateway] Payment middleware disabled -- feeds served free in discovery mode");
@@ -140,6 +148,14 @@ async function setupPaymentMiddleware() {
 
 // Non-blocking — don't let facilitator failure prevent startup
 setupPaymentMiddleware().catch(() => {});
+
+// Synchronous pass-through wrapper — MUST be registered before any route so
+// Express runs it first. Delegates to the real payment middleware once
+// setupPaymentMiddleware() has it ready; until then, next() → discovery mode.
+app.use((req, res, next) => {
+  if (activePaymentMiddleware) return activePaymentMiddleware(req, res, next);
+  return next();
+});
 
 // ---------------------------------------------------------------------------
 // Free Endpoints
