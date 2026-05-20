@@ -13,6 +13,7 @@ import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { config, feedRegistry } from "./lib/config.js";
+import { buildOpenApiDoc } from "./lib/openapi.js";
 import { fetchCryptoTop100 } from "./feeds/crypto.js";
 import { fetchDefiYields } from "./feeds/defi.js";
 import { fetchByteStatus } from "./feeds/status.js";
@@ -176,6 +177,15 @@ app.get("/feeds", (_req, res) => {
     asset: config.usdcAddress,
     feeds: feedRegistry,
   });
+});
+
+/**
+ * OpenAPI 3.1 discovery document — the canonical machine-readable contract.
+ * x402scan and other agent discovery layers read this first (precedence over
+ * the runtime 402). Free endpoint — must not be payment-gated.
+ */
+app.get("/openapi.json", (_req, res) => {
+  res.json(buildOpenApiDoc());
 });
 
 /** Health check for load balancers and monitoring. */
