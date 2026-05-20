@@ -5,12 +5,16 @@
  * discovery contract that x402scan (and other agent discovery layers) read.
  * Discovery precedence: this document first, runtime 402 behavior second.
  *
+ * Lists only the four *payable* resources. Free operational endpoints
+ * (/feeds catalog, /health) are deliberately omitted — x402scan treats
+ * every path here as a payable resource, so a free one fails its 402
+ * probe and registers as an error.
+ *
  * Every paid operation declares both halves of the contract x402scan checks:
  *   - x-payment-info  — price (fixed $/request) + protocols ([{ x402 }])
  *   - responses.402   — the runtime payment challenge
  *   - input + output schemas — so an agent knows what to send and what it
- *     gets back. The earlier "Input/Output Schema Missing" warning on
- *     /feeds/crypto-top100 was the absence of this document entirely.
+ *     gets back.
  *
  * buildOpenApiDoc() reads `config` so price/network stay in sync with the
  * running gateway — never hard-code the amount here.
@@ -185,6 +189,9 @@ export function buildOpenApiDoc() {
           operationId: "getCryptoTop100",
           summary: "Top 25 cryptocurrencies — price, market cap, 24h change",
           tags: ["Feeds"],
+          // No-input GET — explicit empty parameter list so discovery
+          // tooling reads "nothing to send" rather than "schema forgotten".
+          parameters: [],
           "x-payment-info": paymentInfo(),
           responses: paidResponses(cryptoTop100Schema),
         },
@@ -194,6 +201,7 @@ export function buildOpenApiDoc() {
           operationId: "getDefiYields",
           summary: "Top DeFi yield pools across major chains",
           tags: ["Feeds"],
+          parameters: [],
           "x-payment-info": paymentInfo(),
           responses: paidResponses(defiYieldsSchema),
         },
@@ -203,6 +211,7 @@ export function buildOpenApiDoc() {
           operationId: "getByteStatus",
           summary: "Byte Protocol live on-chain status and metrics",
           tags: ["Feeds"],
+          parameters: [],
           "x-payment-info": paymentInfo(),
           responses: paidResponses(byteStatusSchema),
         },
@@ -224,44 +233,11 @@ export function buildOpenApiDoc() {
           responses: paidResponses(factQueryResponseSchema),
         },
       },
-      "/feeds": {
-        get: {
-          operationId: "listFeeds",
-          summary: "Feed catalog — all feeds with pricing and metadata (free)",
-          tags: ["Discovery"],
-          responses: {
-            "200": {
-              description: "Feed catalog",
-              content: { "application/json": { schema: { type: "object" } } },
-            },
-          },
-        },
-      },
-      "/health": {
-        get: {
-          operationId: "health",
-          summary: "Liveness check (free)",
-          tags: ["Discovery"],
-          responses: {
-            "200": {
-              description: "Service healthy",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    properties: {
-                      status: { type: "string" },
-                      timestamp: { type: "string", format: "date-time" },
-                      uptime: { type: "number" },
-                    },
-                    required: ["status"],
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
+      // NOTE: the free operational endpoints (GET /feeds catalog, GET /health)
+      // are intentionally NOT listed here. This document is consumed by
+      // x402scan as a catalog of *payable* resources — a free endpoint fails
+      // its 402 probe and registers as an error. The free endpoints still
+      // exist on the server; agents learn about them from info.x-guidance.
     },
   };
 }

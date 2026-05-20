@@ -188,6 +188,17 @@ app.get("/openapi.json", (_req, res) => {
   res.json(buildOpenApiDoc());
 });
 
+/**
+ * Favicon — x402scan (and browsers) fetch /favicon.ico to show the listing
+ * icon. Served from the repo root; WorkingDirectory is the gateway dir so
+ * process.cwd()-relative resolution holds under systemd. Free, ungated.
+ */
+app.get("/favicon.ico", (_req, res) => {
+  res.sendFile("favicon.ico", { root: process.cwd() }, (err) => {
+    if (err && !res.headersSent) res.status(404).end();
+  });
+});
+
 /** Health check for load balancers and monitoring. */
 app.get("/health", (_req, res) => {
   res.json({
