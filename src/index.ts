@@ -119,7 +119,16 @@ const paymentRoutes: Record<string, any> = {
 // here once the real middleware is ready.
 let activePaymentMiddleware: ((req: any, res: any, next: any) => void) | null = null;
 
-async function setupPaymentMiddleware() {
+/** True iff this exact method+path is one of the payment-gated routes. */
+function isPaidRoute(req: any): boolean {
+  return Boolean(paymentRoutes[`${req.method} ${req.path}`]);
+}
+
+/**
+ * Build the x402 payment middleware. Returns true on success, false (rather
+ * than throwing) if the facilitator is unreachable — so the caller can retry.
+ */
+async function setupPaymentMiddleware(): Promise<boolean> {
   try {
     const facilitator = new HTTPFacilitatorClient({ url: config.facilitatorUrl });
     const server = new x402ResourceServer(facilitator)
@@ -133,28 +142,65 @@ async function setupPaymentMiddleware() {
     // Fetch supported payment kinds from the facilitator. Without this the
     // resource server has no supported-kinds cache, so buildPaymentRequirements
     // throws "Facilitator does not support exact on eip155:421614" on every
-    // payable request — payable feeds 500 instead of returning a clean 402.
-    // Inside the try block on purpose: if the facilitator is unreachable at
-    // startup, this throws → catch → discovery mode (free feeds), which is the
-    // intended graceful-degradation behavior.
+    // payable request. If the facilitator is unreachable at startup this
+    // throws — caught below, reported as false, and retried.
     await server.initialize();
 
     activePaymentMiddleware = paymentMiddleware(paymentRoutes, server, undefined, undefined, false);
-    console.log("[x402-gateway] Payment middleware active");
+    return true;
   } catch (e) {
-    console.warn("[x402-gateway] Payment middleware disabled -- feeds served free in discovery mode");
-    console.warn(`[x402-gateway] Reason: ${e instanceof Error ? e.message : e}`);
+    console.warn(`[x402-gateway] Payment middleware not ready: ${e instanceof Error ? e.message : e}`);
+    return false;
   }
 }
 
-// Non-blocking — don't let facilitator failure prevent startup
-setupPaymentMiddleware().catch(() => {});
+/**
+ * Bring the payment middleware up, retrying until the facilitator is reachable.
+ *
+ * This is the fix for the 402-flow regression: setup ran exactly once at
+ * startup, so if the gateway lost the boot race against the facilitator's HTTP
+ * listener it failed once and then served every paid feed FREE forever. It now
+ * retries — and, critically, paid routes fail closed (503) until it succeeds
+ * (see the gate below), so paid data is never given away.
+ */
+async function setupPaymentMiddlewareWithRetry(): Promise<void> {
+  const RETRY_DELAY_MS = 15_000;
+  let attempt = 0;
+  while (!activePaymentMiddleware) {
+    attempt += 1;
+    if (await setupPaymentMiddleware()) {
+      console.log(`[x402-gateway] Payment middleware active (attempt ${attempt})`);
+      return;
+    }
+    console.warn(
+      `[x402-gateway] paid feeds FAIL CLOSED (503) until the facilitator is reachable — ` +
+        `retrying in ${RETRY_DELAY_MS / 1000}s (attempt ${attempt})`,
+    );
+    await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+  }
+}
 
-// Synchronous pass-through wrapper — MUST be registered before any route so
-// Express runs it first. Delegates to the real payment middleware once
-// setupPaymentMiddleware() has it ready; until then, next() → discovery mode.
+// Non-blocking — facilitator trouble must not prevent the free discovery
+// endpoints from starting.
+setupPaymentMiddlewareWithRetry().catch(() => {});
+
+// Payment gate — MUST be registered before any route so Express runs it first.
+//   middleware ready       -> delegate to the real x402 payment middleware
+//   not ready + paid route -> 503 FAIL CLOSED (never serve paid data free)
+//   not ready + free route -> next()
+// The previous version next()'d unconditionally when the middleware was not
+// ready, which served every paid feed for free if the facilitator was missed
+// at startup. That silent revenue hole is the regression this fixes.
 app.use((req, res, next) => {
   if (activePaymentMiddleware) return activePaymentMiddleware(req, res, next);
+  if (isPaidRoute(req)) {
+    return res.status(503).json({
+      error: "payment_unavailable",
+      detail:
+        "x402 payment facilitator is not reachable yet — paid feeds are " +
+        "temporarily unavailable. Retry shortly.",
+    });
+  }
   return next();
 });
 
