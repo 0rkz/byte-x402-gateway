@@ -17,6 +17,7 @@ import { buildOpenApiDoc } from "./lib/openapi.js";
 import { fetchCryptoTop100 } from "./feeds/crypto.js";
 import { fetchDefiYields } from "./feeds/defi.js";
 import { fetchByteStatus } from "./feeds/status.js";
+import { fetchLatestPublisherPayload } from "./feeds/generic.js";
 
 // Solana support — conditionally loaded at startup
 let ExactSvmScheme: any = null;
@@ -98,11 +99,21 @@ const paymentRoutes: Record<string, any> = {
     accepts: buildAccepts(),
     description: "Byte Protocol live status and metrics",
   },
-  "POST /feeds/fact-query": {
+  "POST /feeds/fact-oracle": {
     accepts: buildAccepts(),
     description: "Slashable factual question/answer — proxied to fact-oracle.payperbyte.io; answer delivered on-chain via DataStream broadcast to the subscriber",
   },
 };
+
+// Wire all BYTE Library publisher-backed feeds into the payment middleware.
+// Driven by feedRegistry so adding a publisher only requires editing config.ts.
+for (const feed of feedRegistry) {
+  if (!feed.publisher) continue;
+  paymentRoutes[`GET ${feed.endpoint}`] = {
+    accepts: buildAccepts(),
+    description: feed.description,
+  };
+}
 
 /**
  * Build the x402 resource server that verifies payment receipts.
@@ -302,7 +313,7 @@ app.get("/feeds/byte-status", async (_req, res) => {
  * 200: { request_id, est_eta_ms, publisher } (relayed from fact-oracle)
  * Non-2xx from fact-oracle is forwarded with its body.
  */
-app.post("/feeds/fact-query", async (req, res) => {
+app.post("/feeds/fact-oracle", async (req, res) => {
   try {
     const body = req.body ?? {};
     const upstream = await fetch(`${config.factOracleUrl}/query`, {
@@ -316,6 +327,23 @@ app.post("/feeds/fact-query", async (req, res) => {
     res.status(502).json({ error: "fact-oracle proxy failed", detail: err.message });
   }
 });
+
+// BYTE Library publisher-backed feeds — generic handler proxying the latest
+// archived broadcast from the discovery-api. Driven by feedRegistry; adding a
+// publisher only requires editing config.ts.
+for (const feed of feedRegistry) {
+  if (!feed.publisher) continue;
+  const publisher = feed.publisher;
+  const slug = feed.id;
+  app.get(feed.endpoint, async (_req, res) => {
+    try {
+      const data = await fetchLatestPublisherPayload({ slug, publisher });
+      res.json(data);
+    } catch (err: any) {
+      res.status(502).json({ error: `Failed to fetch ${slug}`, detail: err.message });
+    }
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Start

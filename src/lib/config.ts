@@ -67,6 +67,13 @@ export interface FeedMetadata {
   updateFrequency: string;
   /** HTTP endpoint path */
   endpoint: string;
+  /**
+   * For feeds backed by the generic discovery-api proxy (i.e. served by a
+   * BYTE Library publisher rather than a bespoke upstream fetcher), the
+   * publisher's on-chain Arbitrum address. Undefined for bespoke feeds
+   * (crypto-top100, defi-yields, byte-status, fact-query).
+   */
+  publisher?: `0x${string}`;
 }
 
 /** Format an atomic-units string as "$x.xxx" for human-readable display. */
@@ -105,12 +112,52 @@ export const feedRegistry: FeedMetadata[] = [
     endpoint: "/feeds/byte-status",
   },
   {
-    id: "fact-query",
+    id: "fact-oracle",
     name: "Byte Fact Oracle",
     description: "Slashable factual question/answer via fact-oracle.payperbyte.io — Claude web search + SelfCheckGPT NLI gate, delivered on-chain",
     price: fmtUsdc(config.requestAmountAtomic),
     pqsScore: 91,
     updateFrequency: "on-demand",
-    endpoint: "/feeds/fact-query",
+    endpoint: "/feeds/fact-oracle",
   },
+  // ── BYTE Library publisher feeds (served via the generic discovery-api proxy)
+  // Each entry's `publisher` is the on-chain Arbitrum address registered on
+  // DataRegistry; the gateway proxies the latest BroadcastStreamed payload
+  // for that publisher. Adding/removing a publisher = updating this list.
+  ...indexerFeed("weather", "Weather (US, multi-city)", "NWS weather forecasts for 5 US cities (NYC, LA, Chicago, Houston, Miami)", 90, "60s", "0xa820763c023a929e83c59e4fd5a623e5a8efe941"),
+  ...indexerFeed("earthquakes", "Earthquakes", "USGS recent significant earthquakes worldwide (M4.0+)", 92, "120s", "0xa1a55406de233901257aec7b499a26f040ba3cfa"),
+  ...indexerFeed("space-weather", "Space Weather", "NOAA SWPC solar activity, geomagnetic storms, Kp index", 90, "300s", "0x5c3b05e1b6654d96445193d98b39e2aa4ddffdc4"),
+  ...indexerFeed("news-feed", "News (LLM-curated)", "LLM-curated news headlines with source citations", 88, "300s", "0x551a4ed7f4a8cf5170a5efc5a5d1266386962e73"),
+  ...indexerFeed("code-pulse", "Code Pulse", "Repo / package release tracker — latest releases of high-signal OSS projects", 88, "600s", "0x15bfc9492940ff2620118f4611eaed949a8415db"),
+  ...indexerFeed("runtime-eol", "Runtime EOL", "End-of-life dates and status for language runtimes, frameworks, OSes (endoflife.date)", 90, "daily", "0x17a67d0d18f9b93f064a23d2076074ea8802216f"),
+  ...indexerFeed("threat-intel", "Threat Intel", "Live IOCs, CVE highlights, exploit signals from public threat-intel feeds", 88, "300s", "0xb90b00f891dc534a5b59c60170661b868f3c26de"),
+  ...indexerFeed("btc-metrics", "BTC Metrics", "Bitcoin chain metrics: hashrate, mempool, mining stats", 85, "120s", "0x07b8c1d531958a3193ea527aea52a9f26bcfe91b"),
+  ...indexerFeed("pkg-facts", "Package Facts", "Per-package facts for popular npm/PyPI packages (latest versions, deprecations, advisories)", 85, "on-demand", "0x14cf5b197acd9fe42b51570d812142b8eb7ce131"),
+  ...indexerFeed("cve-facts", "CVE Facts", "Detailed facts on individual CVEs (NVD scoring, affected versions, fix availability)", 85, "on-demand", "0x2c95b5af64b305034caea44f13a546d1377b32ac"),
+  ...indexerFeed("wiki-facts", "Wikipedia Facts", "Sourced answers from Wikipedia + Wikidata for general-knowledge questions", 85, "on-demand", "0x60c349d98c0c4f8e9768a2bb7bddf4f1281231d4"),
+  ...indexerFeed("merchant-trust", "Merchant Trust", "Trust-score signals for merchants/sellers — sanctions, scam-report aggregation, age-of-domain", 85, "on-demand", "0xbc219e76d8b04197380baec27118d98f1e438d7a"),
 ];
+
+/**
+ * Build a feed-registry entry for a BYTE Library publisher-backed feed.
+ * Returns a single-element array so the spread above stays a one-liner per feed.
+ */
+function indexerFeed(
+  id: string,
+  name: string,
+  description: string,
+  pqsScore: number,
+  updateFrequency: string,
+  publisher: `0x${string}`,
+): [FeedMetadata] {
+  return [{
+    id,
+    name,
+    description,
+    price: fmtUsdc(config.requestAmountAtomic),
+    pqsScore,
+    updateFrequency,
+    endpoint: `/feeds/${id}`,
+    publisher,
+  }];
+}

@@ -19,7 +19,7 @@
  * buildOpenApiDoc() reads `config` so price/network stay in sync with the
  * running gateway — never hard-code the amount here.
  */
-import { config } from "./config.js";
+import { config, feedRegistry } from "./config.js";
 
 /** Shared x-payment-info block — fixed price, x402 protocol. */
 function paymentInfo() {
@@ -156,7 +156,54 @@ const factQueryResponseSchema = {
   required: ["request_id", "publisher"],
 };
 
+// Generic response shape for BYTE Library publisher-backed feeds — the
+// `data` field varies per publisher, so it's typed as a free-form object/array.
+const byteLibraryFeedSchema = {
+  type: "object",
+  properties: {
+    feed: { type: "string" },
+    publisher: { type: "string", description: "Publisher's on-chain address" },
+    timestamp: { type: "string", format: "date-time" },
+    source: { const: "byte-library-broadcast" },
+    txHash: { type: "string", description: "DataStream broadcast tx hash" },
+    payloadHash: { type: "string", description: "keccak256 of the broadcast payload" },
+    payloadBytes: { type: "integer" },
+    data: {
+      description: "Publisher-defined payload. Shape varies; see byte-data-feeds repo for per-feed schemas.",
+    },
+  },
+  required: ["feed", "publisher", "timestamp", "source", "data"],
+};
+
 // ─── Document ────────────────────────────────────────────────────────────────
+
+/** PascalCase a kebab-case slug for OpenAPI operationIds. e.g. "code-pulse" → "CodePulse". */
+function pascal(slug: string): string {
+  return slug
+    .split("-")
+    .map((s) => (s[0] ? s[0].toUpperCase() + s.slice(1) : s))
+    .join("");
+}
+
+/** Build OpenAPI path entries for every BYTE Library publisher-backed feed. */
+function indexerFeedPaths(): Record<string, unknown> {
+  const paths: Record<string, unknown> = {};
+  for (const feed of feedRegistry) {
+    if (!feed.publisher) continue;
+    paths[feed.endpoint] = {
+      get: {
+        operationId: `get${pascal(feed.id)}`,
+        summary: `${feed.name} — latest BYTE Library broadcast`,
+        description: feed.description,
+        tags: ["Feeds"],
+        parameters: [],
+        "x-payment-info": paymentInfo(),
+        responses: paidResponses(byteLibraryFeedSchema),
+      },
+    };
+  }
+  return paths;
+}
 
 export function buildOpenApiDoc() {
   const usdAmount = (Number(config.requestAmountAtomic) / 1_000_000).toFixed(6);
@@ -176,7 +223,7 @@ export function buildOpenApiDoc() {
         usdAmount +
         " USDC on Arbitrum Sepolia (network eip155:421614) and retry. " +
         "GET feed endpoints (/feeds/crypto-top100, /feeds/defi-yields, " +
-        "/feeds/byte-status) take no input. POST /feeds/fact-query needs a " +
+        "/feeds/byte-status) take no input. POST /feeds/fact-oracle needs a " +
         "JSON body: `question` (string) and `subscriber_address` (0x… address " +
         "subscribed to the fact-oracle with USDC escrow). The fact-oracle " +
         "answer is delivered on-chain via a DataStream broadcast to that " +
@@ -216,9 +263,9 @@ export function buildOpenApiDoc() {
           responses: paidResponses(byteStatusSchema),
         },
       },
-      "/feeds/fact-query": {
+      "/feeds/fact-oracle": {
         post: {
-          operationId: "postFactQuery",
+          operationId: "postFactOracle",
           summary:
             "Slashable factual Q&A — answer delivered on-chain by a " +
             "reputation-staked fact-oracle publisher",
@@ -233,6 +280,7 @@ export function buildOpenApiDoc() {
           responses: paidResponses(factQueryResponseSchema),
         },
       },
+      ...indexerFeedPaths(),
       // NOTE: the free operational endpoints (GET /feeds catalog, GET /health)
       // are intentionally NOT listed here. This document is consumed by
       // x402scan as a catalog of *payable* resources — a free endpoint fails
