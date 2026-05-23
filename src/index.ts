@@ -16,7 +16,6 @@ import { config, feedRegistry } from "./lib/config.js";
 import { buildOpenApiDoc } from "./lib/openapi.js";
 import { fetchCryptoTop100 } from "./feeds/crypto.js";
 import { fetchDefiYields } from "./feeds/defi.js";
-import { fetchByteStatus } from "./feeds/status.js";
 import { fetchLatestPublisherPayload } from "./feeds/generic.js";
 
 // Solana support — conditionally loaded at startup
@@ -56,7 +55,7 @@ const app = express();
  * fields it needs to verify the EIP-3009 signature (Centre USDC uses
  * `"USD Coin"` / `"2"`).
  */
-function buildAccepts() {
+function buildAccepts(priceAtomic: string) {
   const accepts: any[] = [
     {
       scheme: "exact",
@@ -64,7 +63,7 @@ function buildAccepts() {
       payTo: config.payTo,
       price: {
         asset: config.usdcAddress,
-        amount: config.requestAmountAtomic,
+        amount: priceAtomic,
         extra: {
           name: config.usdcDomainName,
           version: config.usdcDomainVersion,
@@ -77,7 +76,7 @@ function buildAccepts() {
   if (config.solanaPayTo && ExactSvmScheme) {
     accepts.push({
       scheme: "exact",
-      price: `$${Number(config.requestAmountAtomic) / 1_000_000}`,
+      price: `$${Number(priceAtomic) / 1_000_000}`,
       network: config.solanaNetwork,
       payTo: config.solanaPayTo,
     });
@@ -86,31 +85,14 @@ function buildAccepts() {
   return accepts;
 }
 
-const paymentRoutes: Record<string, any> = {
-  "GET /feeds/crypto-top100": {
-    accepts: buildAccepts(),
-    description: "Top 25 crypto prices, market caps, 24h change from CoinGecko",
-  },
-  "GET /feeds/defi-yields": {
-    accepts: buildAccepts(),
-    description: "Top DeFi yields across major chains from DeFiLlama",
-  },
-  "GET /feeds/byte-status": {
-    accepts: buildAccepts(),
-    description: "Byte Protocol live status and metrics",
-  },
-  "POST /feeds/fact-oracle": {
-    accepts: buildAccepts(),
-    description: "Slashable factual question/answer — proxied to fact-oracle.payperbyte.io; answer delivered on-chain via DataStream broadcast to the subscriber",
-  },
-};
-
-// Wire all BYTE Library publisher-backed feeds into the payment middleware.
-// Driven by feedRegistry so adding a publisher only requires editing config.ts.
+// Every feed in feedRegistry is wired into the payment middleware with its
+// per-feed price (computed from expectedSizeBytes). fact-oracle is POST
+// because it carries a request body; everything else is GET.
+const paymentRoutes: Record<string, any> = {};
 for (const feed of feedRegistry) {
-  if (!feed.publisher) continue;
-  paymentRoutes[`GET ${feed.endpoint}`] = {
-    accepts: buildAccepts(),
+  const method = feed.id === "fact-oracle" ? "POST" : "GET";
+  paymentRoutes[`${method} ${feed.endpoint}`] = {
+    accepts: buildAccepts(feed.priceAtomic),
     description: feed.description,
   };
 }
@@ -225,13 +207,17 @@ app.get("/feeds", (_req, res) => {
   if (config.solanaPayTo && ExactSvmScheme) networks.push(config.solanaNetwork);
 
   res.json({
-    protocol: "Byte Protocol x402 Gateway",
-    version: "0.2.0",
+    protocol: "BYTE Library x402 Gateway",
+    version: "0.3.0",
     networks,
     facilitator: config.facilitatorUrl,
-    pricePerRequest: `$${(Number(config.requestAmountAtomic) / 1_000_000).toFixed(4)}`,
-    pricePerRequestAtomic: config.requestAmountAtomic,
     asset: config.usdcAddress,
+    pricing: {
+      model: "per-byte",
+      pricePerKB: `$${(Number(config.pricePerKBAtomic) / 1_000_000).toFixed(6)}`,
+      floor: `$${(Number(config.priceFloorAtomic) / 1_000_000).toFixed(6)}`,
+      note: "Per-feed price = max(floor, ceil(expectedSizeBytes / 1024 × pricePerKB)). Each feed entry below carries its computed price + expectedSizeBytes.",
+    },
     feeds: feedRegistry,
   });
 });
@@ -286,16 +272,6 @@ app.get("/feeds/defi-yields", async (_req, res) => {
     res.json(data);
   } catch (err: any) {
     res.status(502).json({ error: "Failed to fetch DeFi yield data", detail: err.message });
-  }
-});
-
-/** Live Byte Protocol on-chain metrics. */
-app.get("/feeds/byte-status", async (_req, res) => {
-  try {
-    const data = await fetchByteStatus();
-    res.json(data);
-  } catch (err: any) {
-    res.status(502).json({ error: "Failed to fetch protocol status", detail: err.message });
   }
 });
 
@@ -357,9 +333,11 @@ app.listen(config.port, () => {
     console.log(`[x402-gateway] Solana Network: ${config.solanaNetwork}`);
     console.log(`[x402-gateway] Solana PayTo: ${config.solanaPayTo}`);
   }
-  console.log(`[x402-gateway] Price per request: ${config.requestAmountAtomic} atomic units ($${Number(config.requestAmountAtomic) / 1_000_000})`);
+  console.log(`[x402-gateway] Pricing: $${(Number(config.pricePerKBAtomic) / 1_000_000).toFixed(6)}/KB (floor $${(Number(config.priceFloorAtomic) / 1_000_000).toFixed(6)})`);
   console.log(`[x402-gateway] USDC asset: ${config.usdcAddress} (domain="${config.usdcDomainName}" v${config.usdcDomainVersion})`);
   console.log(`[x402-gateway] Facilitator: ${config.facilitatorUrl}`);
-  console.log(`[x402-gateway] Facilitator: ${config.facilitatorUrl}`);
   console.log(`[x402-gateway] Feeds available: ${feedRegistry.length}`);
+  for (const f of feedRegistry) {
+    console.log(`[x402-gateway]   ${f.endpoint.padEnd(28)} ${f.price.padStart(8)} (${f.expectedSizeBytes}B)`);
+  }
 });

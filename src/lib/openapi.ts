@@ -21,21 +21,21 @@
  */
 import { config, feedRegistry } from "./config.js";
 
-/** Shared x-payment-info block — fixed price, x402 protocol. */
-function paymentInfo() {
+/** Per-feed x-payment-info block — price varies by expected payload size. */
+function paymentInfo(priceAtomic: string) {
   return {
     price: {
       mode: "fixed",
       currency: "USD",
-      // requestAmountAtomic is 6-decimal USDC base units ("1000" = $0.001).
-      amount: (Number(config.requestAmountAtomic) / 1_000_000).toFixed(6),
+      amount: (Number(priceAtomic) / 1_000_000).toFixed(6),
     },
     protocols: [{ x402: {} }],
   };
 }
 
-/** Standard responses block for a paid operation, given its 200 schema. */
-function paidResponses(okSchema: object) {
+/** Responses block for a paid operation. The 402 description embeds the price. */
+function paidResponses(okSchema: object, priceAtomic: string) {
+  const usd = (Number(priceAtomic) / 1_000_000).toFixed(6);
   return {
     "200": {
       description: "Successful response",
@@ -43,11 +43,18 @@ function paidResponses(okSchema: object) {
     },
     "402": {
       description:
-        "Payment Required — pay the x402 challenge in the payment-required " +
-        "header (x402 v2) and retry. $0.001 USDC on Arbitrum Sepolia.",
+        `Payment Required — pay the x402 challenge in the payment-required ` +
+        `header (x402 v2) and retry. $${usd} USDC on Arbitrum Sepolia.`,
     },
     "502": { description: "Upstream data source unavailable" },
   };
+}
+
+/** Lookup a feed by id, throwing if missing — keeps the bespoke paths honest. */
+function feed(id: string) {
+  const f = feedRegistry.find((x) => x.id === id);
+  if (!f) throw new Error(`feedRegistry missing entry for ${id}`);
+  return f;
 }
 
 // ─── Output schemas ──────────────────────────────────────────────────────────
@@ -102,19 +109,6 @@ const defiYieldsSchema = {
     },
   },
   required: ["feed", "timestamp", "data"],
-};
-
-const byteStatusSchema = {
-  type: "object",
-  properties: {
-    feed: { type: "string" },
-    timestamp: { type: "string", format: "date-time" },
-    publishers: { type: "integer" },
-    validators: { type: "integer" },
-    messages: { type: "integer" },
-    totalStakedPpb: { type: "string" },
-  },
-  required: ["feed", "timestamp"],
 };
 
 const factQueryRequestSchema = {
@@ -188,17 +182,17 @@ function pascal(slug: string): string {
 /** Build OpenAPI path entries for every BYTE Library publisher-backed feed. */
 function indexerFeedPaths(): Record<string, unknown> {
   const paths: Record<string, unknown> = {};
-  for (const feed of feedRegistry) {
-    if (!feed.publisher) continue;
-    paths[feed.endpoint] = {
+  for (const f of feedRegistry) {
+    if (!f.publisher) continue;
+    paths[f.endpoint] = {
       get: {
-        operationId: `get${pascal(feed.id)}`,
-        summary: `${feed.name} — latest BYTE Library broadcast`,
-        description: feed.description,
+        operationId: `get${pascal(f.id)}`,
+        summary: `${f.name} — latest BYTE Library broadcast (${f.price} / call, ~${f.expectedSizeBytes}B)`,
+        description: f.description,
         tags: ["Feeds"],
         parameters: [],
-        "x-payment-info": paymentInfo(),
-        responses: paidResponses(byteLibraryFeedSchema),
+        "x-payment-info": paymentInfo(f.priceAtomic),
+        responses: paidResponses(byteLibraryFeedSchema, f.priceAtomic),
       },
     };
   }
@@ -206,78 +200,69 @@ function indexerFeedPaths(): Record<string, unknown> {
 }
 
 export function buildOpenApiDoc() {
-  const usdAmount = (Number(config.requestAmountAtomic) / 1_000_000).toFixed(6);
+  const crypto = feed("crypto-top100");
+  const defi = feed("defi-yields");
+  const oracle = feed("fact-oracle");
 
   return {
     openapi: "3.1.0",
     info: {
-      title: "Byte Protocol x402 Gateway",
-      version: "0.2.0",
+      title: "BYTE Library x402 Gateway",
+      version: "0.3.0",
       description:
-        "Per-byte data feeds for AI agents — crypto markets, DeFi yields, " +
-        "Byte Protocol status, and a slashable fact-oracle. Paid per request " +
-        "in USDC via x402, no API keys.",
+        "Per-byte data feeds for AI agents — weather, earthquakes, crypto " +
+        "markets, DeFi yields, news, code-pulse, threat-intel, and a " +
+        "slashable fact-oracle. Paid per request in USDC via x402, no API " +
+        "keys. Price is per-feed, derived from expected payload size at " +
+        `$${(Number(config.pricePerKBAtomic) / 1_000_000).toFixed(6)}/KB ` +
+        `(floor $${(Number(config.priceFloorAtomic) / 1_000_000).toFixed(6)}).`,
       "x-guidance":
-        "Paid endpoints return HTTP 402 with x402 v2 payment requirements in " +
-        "the `payment-required` header — pay $" +
-        usdAmount +
-        " USDC on Arbitrum Sepolia (network eip155:421614) and retry. " +
-        "GET feed endpoints (/feeds/crypto-top100, /feeds/defi-yields, " +
-        "/feeds/byte-status) take no input. POST /feeds/fact-oracle needs a " +
-        "JSON body: `question` (string) and `subscriber_address` (0x… address " +
-        "subscribed to the fact-oracle with USDC escrow). The fact-oracle " +
-        "answer is delivered on-chain via a DataStream broadcast to that " +
-        "address. Free, no payment: GET /feeds (catalog) and GET /health.",
+        "Paid endpoints return HTTP 402 with x402 v2 payment requirements " +
+        "in the `payment-required` header — pay the quoted USDC on Arbitrum " +
+        "Sepolia (network eip155:421614) and retry. Each feed has its own " +
+        "price (see x-payment-info per operation); the catalog at GET /feeds " +
+        "(free, ungated) lists every feed with its computed price and " +
+        "expected payload size. POST /feeds/fact-oracle needs a JSON body: " +
+        "`question` (string) and `subscriber_address` (0x… address " +
+        "subscribed to the fact-oracle with USDC escrow). The answer is " +
+        "broadcast on-chain via DataStream to that address. Free, no " +
+        "payment: GET /feeds and GET /health.",
     },
     servers: [{ url: "https://x402.payperbyte.io" }],
     paths: {
       "/feeds/crypto-top100": {
         get: {
           operationId: "getCryptoTop100",
-          summary: "Top 25 cryptocurrencies — price, market cap, 24h change",
+          summary: `Top 25 cryptocurrencies — price, market cap, 24h change (${crypto.price})`,
           tags: ["Feeds"],
-          // No-input GET — explicit empty parameter list so discovery
-          // tooling reads "nothing to send" rather than "schema forgotten".
           parameters: [],
-          "x-payment-info": paymentInfo(),
-          responses: paidResponses(cryptoTop100Schema),
+          "x-payment-info": paymentInfo(crypto.priceAtomic),
+          responses: paidResponses(cryptoTop100Schema, crypto.priceAtomic),
         },
       },
       "/feeds/defi-yields": {
         get: {
           operationId: "getDefiYields",
-          summary: "Top DeFi yield pools across major chains",
+          summary: `Top DeFi yield pools across major chains (${defi.price})`,
           tags: ["Feeds"],
           parameters: [],
-          "x-payment-info": paymentInfo(),
-          responses: paidResponses(defiYieldsSchema),
-        },
-      },
-      "/feeds/byte-status": {
-        get: {
-          operationId: "getByteStatus",
-          summary: "Byte Protocol live on-chain status and metrics",
-          tags: ["Feeds"],
-          parameters: [],
-          "x-payment-info": paymentInfo(),
-          responses: paidResponses(byteStatusSchema),
+          "x-payment-info": paymentInfo(defi.priceAtomic),
+          responses: paidResponses(defiYieldsSchema, defi.priceAtomic),
         },
       },
       "/feeds/fact-oracle": {
         post: {
           operationId: "postFactOracle",
-          summary:
-            "Slashable factual Q&A — answer delivered on-chain by a " +
-            "reputation-staked fact-oracle publisher",
+          summary: `Slashable factual Q&A — answer delivered on-chain (${oracle.price} per query ACK)`,
           tags: ["Feeds"],
-          "x-payment-info": paymentInfo(),
+          "x-payment-info": paymentInfo(oracle.priceAtomic),
           requestBody: {
             required: true,
             content: {
               "application/json": { schema: factQueryRequestSchema },
             },
           },
-          responses: paidResponses(factQueryResponseSchema),
+          responses: paidResponses(factQueryResponseSchema, oracle.priceAtomic),
         },
       },
       ...indexerFeedPaths(),
