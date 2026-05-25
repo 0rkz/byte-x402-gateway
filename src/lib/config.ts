@@ -55,10 +55,12 @@ export const config = {
   cacheTtl: parseInt(process.env.CACHE_TTL || "60", 10) * 1000,
   /** Optional CoinGecko API key for higher rate limits */
   coinGeckoApiKey: process.env.COINGECKO_API_KEY || "",
-  /** Byte Protocol indexer URL for on-chain status data */
-  byteIndexerUrl: process.env.BYTE_INDEXER_URL || "http://localhost:4000",
   /** Byte Protocol fact-oracle URL for the /feeds/fact-query proxy */
   factOracleUrl: process.env.FACT_ORACLE_URL || "https://fact-oracle.payperbyte.io",
+  // (Removed `byteIndexerUrl` 2026-05-25 — was dead code; the actual data
+  // path uses DISCOVERY_API_URL read in feeds/generic.ts, defaulting to
+  // https://api.payperbyte.io. The historical BYTE_INDEXER_URL env was a
+  // misleading no-op.)
 };
 
 /** Metadata describing a single data feed exposed by the gateway. */
