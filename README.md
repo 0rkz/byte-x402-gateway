@@ -1,6 +1,6 @@
-# Byte x402 Gateway
+# BYTE Library x402 Gateway
 
-HTTP payment gateway that exposes Byte Protocol data feeds using the [x402](https://www.x402.org/) standard. Any x402-compatible agent can discover and purchase live market data by paying per-request in USDC -- no API keys, no subscriptions, no Web3 wallet required on the consumer side.
+HTTP payment gateway that exposes [BYTE Library](https://www.payperbyte.io) data feeds using the [x402](https://www.x402.org/) standard. Any x402-compatible agent can discover and purchase per-byte data on Arbitrum by paying per-request in USDC — no API keys, no subscriptions, no Web3 wallet required on the consumer side. Every settlement carries an EIP-712 `PayloadAttestation` receipt.
 
 ## How x402 Works
 
