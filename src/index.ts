@@ -10,9 +10,10 @@
 
 import express from "express";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
+import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
-import { config, feedRegistry } from "./lib/config.js";
+import { config, feedRegistry, DISCLAIMER_TEXT } from "./lib/config.js";
 import { buildOpenApiDoc } from "./lib/openapi.js";
 import { fetchCryptoTop100 } from "./feeds/crypto.js";
 import { fetchDefiYields } from "./feeds/defi.js";
@@ -29,6 +30,18 @@ try {
 }
 
 const app = express();
+
+// Trust the cloudflared tunnel as a single upstream proxy. Without this,
+// req.protocol returns "http" because the tunnel terminates TLS and forwards
+// to localhost over plain HTTP — the x402 payment-required payload's
+// `resource.url` then advertises `http://x402.payperbyte.io/...` even though
+// the real public scheme is HTTPS. Strict x402 v2 clients reject the scheme
+// mismatch ("you said http but my request was https"). Setting trust proxy
+// makes Express honor the X-Forwarded-Proto header cloudflared injects, so
+// req.protocol returns "https" and the payload URL matches reality.
+// Value "1" = trust exactly one hop (the local tunnel) — narrower than
+// `true` (trust all) and correct for our single-cloudflared topology.
+app.set("trust proxy", 1);
 
 // ---------------------------------------------------------------------------
 // x402 Payment Middleware
@@ -86,15 +99,62 @@ function buildAccepts(priceAtomic: string) {
 }
 
 // Every feed in feedRegistry is wired into the payment middleware with its
-// per-feed price (computed from expectedSizeBytes). fact-oracle is POST
-// because it carries a request body; everything else is GET.
+// per-feed price (computed from expectedSizeBytes). POST oracles carry a
+// request body; broadcast/scheduled feeds are GET. Some publisher-backed
+// oracles offer both (subscribe-then-listen via GET indexer proxy AND
+// synchronous request-response via POST proxy) — see usc-statute.
+const POST_ORACLES = new Set(["fact-oracle", "evidence-pack", "usc-statute"]);
+
+// Bazaar discovery extension per route. Minimal output examples per feed shape
+// — just enough for checkIfBazaarNeeded() in @x402/express to detect the
+// extension and auto-register bazaarResourceServerExtension on the server.
+// Per-feed enrichment (richer example payloads, input schemas, route templates)
+// can be incremental — Agentic Market's validator only needs the extension
+// surface to be present. See @x402/extensions/bazaar for the full schema.
+//
+// Note: the input config OMITS `method` — it's inferred from the route key
+// (`GET /...` vs `POST /...`) and filled in later by
+// bazaarResourceServerExtension.enrichDeclaration. The `bodyType` field is
+// the discriminant between Query (GET/HEAD/DELETE) and Body (POST/PUT/PATCH)
+// variants of the union.
+function getExtensions(feedId: string, isPost: boolean): Record<string, unknown> {
+  if (isPost) {
+    return declareDiscoveryExtension({
+      bodyType: "json",
+      input: {},
+      output: { example: { feed: feedId } },
+    });
+  }
+  return declareDiscoveryExtension({
+    output: { example: { feed: feedId } },
+  });
+}
+
 const paymentRoutes: Record<string, any> = {};
 for (const feed of feedRegistry) {
-  const method = feed.id === "fact-oracle" ? "POST" : "GET";
-  paymentRoutes[`${method} ${feed.endpoint}`] = {
-    accepts: buildAccepts(feed.priceAtomic),
-    description: feed.description,
-  };
+  const accepts = buildAccepts(feed.priceAtomic);
+  if (POST_ORACLES.has(feed.id)) {
+    paymentRoutes[`POST ${feed.endpoint}`] = {
+      accepts,
+      description: feed.description,
+      extensions: getExtensions(feed.id, true),
+    };
+  }
+  if (feed.publisher) {
+    // Publisher-backed feeds also serve the latest broadcast via GET — gate it.
+    paymentRoutes[`GET ${feed.endpoint}`] = {
+      accepts,
+      description: feed.description,
+      extensions: getExtensions(feed.id, false),
+    };
+  } else if (!POST_ORACLES.has(feed.id)) {
+    // Bespoke non-oracle feeds (crypto-top100, defi-yields) are GET.
+    paymentRoutes[`GET ${feed.endpoint}`] = {
+      accepts,
+      description: feed.description,
+      extensions: getExtensions(feed.id, false),
+    };
+  }
 }
 
 /**
@@ -197,6 +257,22 @@ app.use((req, res, next) => {
   return next();
 });
 
+// ── Universal disclaimer header (§14) ──────────────────────────────────────
+// Every feed declares a disclaimerCategory in its FeedMetadata. We emit
+// X-BYTE-Disclaimer-Category on every feed response so agents/clients can
+// render the right legal framing without parsing payload. The category-to-
+// text mapping is exposed via DISCLAIMER_TEXT in lib/config.ts and surfaced
+// in GET /feeds metadata so buyers can preview before purchase.
+const disclaimerByPath = new Map<string, string>();
+for (const feed of feedRegistry) {
+  disclaimerByPath.set(feed.endpoint, feed.disclaimerCategory);
+}
+app.use((req, res, next) => {
+  const cat = disclaimerByPath.get(req.path);
+  if (cat) res.setHeader("X-BYTE-Disclaimer-Category", cat);
+  next();
+});
+
 // ---------------------------------------------------------------------------
 // Free Endpoints
 // ---------------------------------------------------------------------------
@@ -217,6 +293,11 @@ app.get("/feeds", (_req, res) => {
       pricePerKB: `$${(Number(config.pricePerKBAtomic) / 1_000_000).toFixed(6)}`,
       floor: `$${(Number(config.priceFloorAtomic) / 1_000_000).toFixed(6)}`,
       note: "Per-feed price = max(floor, ceil(expectedSizeBytes / 1024 × pricePerKB)). Each feed entry below carries its computed price + expectedSizeBytes.",
+    },
+    disclaimers: {
+      header: "X-BYTE-Disclaimer-Category",
+      note: "Every feed response carries X-BYTE-Disclaimer-Category. Render legal framing accordingly. Disclaimer text is also embedded in the signed payload for new Tier 1 publishers; existing publishers carry it via the header until the post-Ari batch upgrade.",
+      text: DISCLAIMER_TEXT,
     },
     feeds: feedRegistry,
   });
@@ -301,6 +382,50 @@ app.post("/feeds/fact-oracle", async (req, res) => {
     res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
   } catch (err: any) {
     res.status(502).json({ error: "fact-oracle proxy failed", detail: err.message });
+  }
+});
+
+/**
+ * evidence-pack — RAG-citable meta-oracle (LAUNCH_PLAN §13).
+ * Body: { claim: string, domains?: string[], max_sources?: int,
+ *         subscriber_address?, subscriber_signature?, request_nonce?, deadline_unix? }
+ */
+app.post("/feeds/evidence-pack", async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const upstream = await fetch(`${config.evidencePackUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await upstream.text();
+    res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+  } catch (err: any) {
+    res.status(502).json({ error: "evidence-pack proxy failed", detail: err.message });
+  }
+});
+
+/**
+ * usc-statute — US Code statute Q&A oracle.
+ * Body: { citation: string, subscriber_address?, subscriber_signature?, request_nonce?, deadline_unix? }
+ *
+ * Note: usc-statute is also registered as a publisher-backed indexerFeed
+ * (the generic loop below sets up the GET route serving the latest broadcast).
+ * This explicit POST proxy is the request-response synchronous path for
+ * agents that don't want to subscribe — same dual-pattern as fact-oracle.
+ */
+app.post("/feeds/usc-statute", async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const upstream = await fetch(`${config.uscStatuteUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await upstream.text();
+    res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+  } catch (err: any) {
+    res.status(502).json({ error: "usc-statute proxy failed", detail: err.message });
   }
 });
 
