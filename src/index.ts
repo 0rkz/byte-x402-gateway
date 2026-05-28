@@ -313,6 +313,80 @@ app.get("/openapi.json", (_req, res) => {
 });
 
 /**
+ * x402 resource discovery manifest (/.well-known/x402.json). Pull-based
+ * discovery: x402 indexers (x402scan, x402engine, CDP discovery) crawl a
+ * well-known path to enumerate payable resources without manual submission.
+ * Complements the per-route Bazaar discovery extension (which feeds
+ * Coinbase's CDP crawler specifically) by exposing the same catalog to
+ * non-Coinbase indexers and the DNS-TXT discovery draft's manifest fetch.
+ * Free, ungated; self-updates from feedRegistry.
+ */
+app.get("/.well-known/x402.json", (_req, res) => {
+  res.json({
+    x402Version: 1,
+    name: "BYTE Library",
+    description:
+      "Per-byte USDC data feeds + oracles for AI agents on Arbitrum. First-party, verifiable, no token.",
+    provider: { organization: "BYTEDev Inc.", url: "https://www.payperbyte.io" },
+    facilitator: config.facilitatorUrl,
+    catalog: "https://x402.payperbyte.io/feeds",
+    resources: feedRegistry.map((feed) => ({
+      resource: `https://x402.payperbyte.io${feed.endpoint}`,
+      method: POST_ORACLES.has(feed.id) ? "POST" : "GET",
+      name: feed.name,
+      description: feed.description,
+      category: feed.disclaimerCategory,
+      price: feed.price,
+      accepts: buildAccepts(feed.priceAtomic),
+      metadata: {
+        expectedSizeBytes: feed.expectedSizeBytes,
+        updateFrequency: feed.updateFrequency,
+      },
+    })),
+  });
+});
+
+/**
+ * Agent card (/.well-known/agent.json) — A2A / agent-discovery convention.
+ * Describes BYTE Library as an agent-callable service: the x402 payment
+ * surface, per-feed skills, and entrypoints (catalog, OpenAPI, the x402
+ * manifest, the hosted MCP server). Free, ungated; self-updates from
+ * feedRegistry.
+ */
+app.get("/.well-known/agent.json", (_req, res) => {
+  res.json({
+    name: "BYTE Library",
+    description:
+      "Per-byte USDC data feeds + oracles for AI agents on Arbitrum. Subscribe to first-party feeds or pay-per-call via x402; every settlement carries an EIP-712 PayloadAttestation receipt.",
+    url: "https://x402.payperbyte.io",
+    version: "0.3.0",
+    provider: { organization: "BYTEDev Inc.", url: "https://www.payperbyte.io" },
+    capabilities: {
+      payments: {
+        protocol: "x402",
+        asset: "USDC",
+        network: config.network,
+        payTo: config.payTo,
+      },
+      streaming: false,
+    },
+    skills: feedRegistry.map((feed) => ({
+      id: feed.id,
+      name: feed.name,
+      description: feed.description,
+      tags: [feed.disclaimerCategory, "x402", "usdc", "arbitrum"],
+    })),
+    endpoints: {
+      catalog: "https://x402.payperbyte.io/feeds",
+      openapi: "https://x402.payperbyte.io/openapi.json",
+      x402: "https://x402.payperbyte.io/.well-known/x402.json",
+      mcp: "https://mcp.payperbyte.io/mcp",
+    },
+    documentationUrl: "https://www.payperbyte.io/docs/quickstart",
+  });
+});
+
+/**
  * Favicon — x402scan (and browsers) fetch /favicon.ico to show the listing
  * icon. Served from the repo root; WorkingDirectory is the gateway dir so
  * process.cwd()-relative resolution holds under systemd. Free, ungated.
