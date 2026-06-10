@@ -18,13 +18,59 @@ No wallet private keys are needed on the agent side. The x402 facilitator handle
 
 ## Available Feeds
 
-| Feed | Endpoint | Price | PQS | Update Freq | Source |
-|------|----------|-------|-----|-------------|--------|
-| Crypto Top 25 | `/feeds/crypto-top100` | $0.001 | 92 | 60s | CoinGecko |
-| DeFi Yields | `/feeds/defi-yields` | $0.001 | 88 | 120s | DeFiLlama |
-| Byte Protocol Status | `/feeds/byte-status` | $0.001 | 95 | 30s | Byte Indexer |
+| Feed | Endpoint | Price | Update Freq | Source |
+|------|----------|-------|-------------|--------|
+| Crypto Top 25 | `/feeds/crypto-top100` | $0.001 | 60s | CoinGecko |
+| DeFi Yields | `/feeds/defi-yields` | $0.001 | 120s | DeFiLlama |
+| Byte Protocol Status | `/feeds/byte-status` | $0.001 | 30s | Byte Indexer |
 
-**PQS** (Protocol Quality Score) is a 0-100 reliability metric assigned by Byte Protocol based on data freshness, uptime, and source reputation.
+Every payload is cryptographically signed and carries an EIP-712 `PayloadAttestation` for provenance — quality is verified, not asserted. A callable on-chain quality-scoring endpoint is in development.
+
+## Verify-before-act receipt (`X-BYTE-Attestation`)
+
+Every data `200` response carries an **`X-BYTE-Attestation`** header: an EIP-712
+`PayloadAttestation` the gateway signs over the **exact response bytes**. A buyer
+verifies the data *before acting on it*, with no chain round-trip:
+
+```
+1. payloadHash  == keccak256(rawResponseBody)
+2. recoverTypedDataAddress(domain, PayloadAttestation, message, signature) == attester
+```
+
+Header value (JSON):
+
+```jsonc
+{
+  "alg": "EIP712-PayloadAttestation",
+  "domain": { "name": "BYTE Library", "version": "1",
+              "chainId": 421614,
+              "verifyingContract": "0x44729bB148F46d8Db509E47b0453edc271e06e95" },
+  "publisher": "0x…",      // == attester (advertised in /.well-known/agent.json)
+  "payloadHash": "0x…",    // keccak256 of the exact response body
+  "payloadLength": 1384,
+  "deadline": 1781030000,
+  "signature": "0x…"
+}
+```
+
+This reuses the **consensus-critical `"BYTE Library"` PayloadAttestation domain +
+struct verbatim** — the same scheme the on-chain `DataStreamLib` and the buyer SDK
+already verify (so a receipt recovers identically in viem *and* `eth_account`).
+The `attester` address is advertised under `receipt` in
+`/.well-known/agent.json`.
+
+**Enable it (deployer):** set `GATEWAY_ATTESTATION_KEY=0x<32-byte>` (a dedicated
+EOA — no funding/registration needed; it only signs off-chain) and publish its
+address. Optional: `ATTESTATION_CHAIN_ID` / `ATTESTATION_VERIFYING_CONTRACT` for a
+Base cutover (never change the domain **name**). If the key is unset, attestation
+is silently disabled and responses are byte-for-byte unchanged — a pure superset.
+
+Verify the round-trip locally:
+
+```bash
+GATEWAY_ATTESTATION_KEY=0x<key> npx tsx test/attestation.ts     # sign + recover + tamper
+GATEWAY_ATTESTATION_KEY=0x<key> npx tsx test/send_attested.ts   # hash binds exact sent bytes
+```
 
 ## Quick Start
 
@@ -61,7 +107,7 @@ docker run -p 3402:3402 --env-file .env byte-x402-gateway
 
 #### `GET /feeds` -- Feed Discovery
 
-Returns all available feeds with pricing, PQS scores, and endpoint paths. This is the entry point for agent discovery.
+Returns all available feeds with pricing, provenance/quality metadata, and endpoint paths. This is the entry point for agent discovery.
 
 ```json
 {
@@ -75,8 +121,8 @@ Returns all available feeds with pricing, PQS scores, and endpoint paths. This i
       "name": "Crypto Top 25",
       "description": "Top 25 cryptocurrencies by market cap with price, volume, and 24h change",
       "price": "$0.001",
-      "pqsScore": 92,
       "updateFrequency": "60s",
+      "provenance": "first-party",
       "endpoint": "/feeds/crypto-top100"
     }
   ]
@@ -170,7 +216,7 @@ Live Byte Protocol on-chain metrics from the indexer. Falls back to cached/place
 3. **Pay** -- Agent sends payment terms to the x402 facilitator, which handles USDC transfer and returns a signed receipt
 4. **Access** -- Agent replays the original request with `X-Payment: <receipt>` header and receives the data
 
-The x402 facilitator acts as a trusted intermediary -- the agent never needs to hold crypto or manage private keys directly. Payment settlement happens on-chain (Arbitrum Sepolia for testnet, Arbitrum One for production).
+The x402 facilitator acts as a trusted intermediary -- the agent never needs to hold crypto or manage private keys directly. Payment settlement happens on-chain on Arbitrum Sepolia testnet today (network `eip155:421614`); mainnet is audit-gated, with no committed date.
 
 ```bash
 # Example: full agent flow using curl

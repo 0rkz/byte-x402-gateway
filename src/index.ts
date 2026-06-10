@@ -18,6 +18,12 @@ import { buildOpenApiDoc } from "./lib/openapi.js";
 import { fetchCryptoTop100 } from "./feeds/crypto.js";
 import { fetchDefiYields } from "./feeds/defi.js";
 import { fetchLatestPublisherPayload } from "./feeds/generic.js";
+import {
+  sendAttested,
+  attestationEnabled,
+  attesterAddress,
+  attestationDomain,
+} from "./lib/attestation.js";
 
 // Solana support — conditionally loaded at startup
 let ExactSvmScheme: any = null;
@@ -321,13 +327,15 @@ app.get("/openapi.json", (_req, res) => {
  * non-Coinbase indexers and the DNS-TXT discovery draft's manifest fetch.
  * Free, ungated; self-updates from feedRegistry.
  */
-app.get("/.well-known/x402.json", (_req, res) => {
-  res.json({
+function buildX402Manifest() {
+  return {
     x402Version: 1,
     name: "BYTE Library",
     description:
-      "Per-byte USDC data feeds + oracles for AI agents on Arbitrum. First-party, verifiable, no token.",
+      "Per-byte USDC data feeds + oracles for AI agents on Arbitrum. First-party, verifiable, no token. Arbitrum Sepolia testnet.",
     provider: { organization: "BYTEDev Inc.", url: "https://www.payperbyte.io" },
+    network: config.network,
+    status: "testnet",
     facilitator: config.facilitatorUrl,
     catalog: "https://x402.payperbyte.io/feeds",
     resources: feedRegistry.map((feed) => ({
@@ -336,6 +344,7 @@ app.get("/.well-known/x402.json", (_req, res) => {
       name: feed.name,
       description: feed.description,
       category: feed.disclaimerCategory,
+      provenance: feed.provenance,
       price: feed.price,
       accepts: buildAccepts(feed.priceAtomic),
       metadata: {
@@ -343,7 +352,20 @@ app.get("/.well-known/x402.json", (_req, res) => {
         updateFrequency: feed.updateFrequency,
       },
     })),
-  });
+  };
+}
+
+app.get("/.well-known/x402.json", (_req, res) => {
+  res.json(buildX402Manifest());
+});
+
+// Doctrine path aliases. The agent-economy doctrine names the bare paths
+// `/.well-known/x402` (no .json) and `/x402-manifest`; some crawlers fetch
+// those literals. Bind both to the same canonical manifest so neither 404s.
+// `/.well-known/x402.json` remains the canonical URL (advertised in the
+// agent card, OpenAPI, and the www pointer).
+app.get(["/x402-manifest", "/.well-known/x402"], (_req, res) => {
+  res.json(buildX402Manifest());
 });
 
 /**
@@ -357,7 +379,7 @@ app.get("/.well-known/agent.json", (_req, res) => {
   res.json({
     name: "BYTE Library",
     description:
-      "Per-byte USDC data feeds + oracles for AI agents on Arbitrum. Subscribe to first-party feeds or pay-per-call via x402; every settlement carries an EIP-712 PayloadAttestation receipt.",
+      "Per-byte USDC data feeds + oracles for AI agents on Arbitrum. Subscribe to first-party feeds or pay-per-call via x402; every data response carries an EIP-712 PayloadAttestation receipt (X-BYTE-Attestation) you verify before acting.",
     url: "https://x402.payperbyte.io",
     version: "0.3.0",
     provider: { organization: "BYTEDev Inc.", url: "https://www.payperbyte.io" },
@@ -370,6 +392,19 @@ app.get("/.well-known/agent.json", (_req, res) => {
       },
       streaming: false,
     },
+    // The verify-before-act receipt: present on every data 200-response as the
+    // X-BYTE-Attestation header. Omitted here only if no attestation key is set.
+    receipt: attestationEnabled()
+      ? {
+          header: "X-BYTE-Attestation",
+          scheme: "EIP712-PayloadAttestation",
+          domain: attestationDomain(),
+          attester: attesterAddress(),
+          verify:
+            "keccak256(responseBody) === payloadHash AND " +
+            "recoverTypedDataAddress(domain, {PayloadAttestation}, message, signature) === attester",
+        }
+      : undefined,
     skills: feedRegistry.map((feed) => ({
       id: feed.id,
       name: feed.name,
@@ -414,7 +449,7 @@ app.get("/health", (_req, res) => {
 app.get("/feeds/crypto-top100", async (_req, res) => {
   try {
     const data = await fetchCryptoTop100();
-    res.json(data);
+    await sendAttested(res, data);
   } catch (err: any) {
     res.status(502).json({ error: "Failed to fetch crypto data", detail: err.message });
   }
@@ -424,7 +459,7 @@ app.get("/feeds/crypto-top100", async (_req, res) => {
 app.get("/feeds/defi-yields", async (_req, res) => {
   try {
     const data = await fetchDefiYields();
-    res.json(data);
+    await sendAttested(res, data);
   } catch (err: any) {
     res.status(502).json({ error: "Failed to fetch DeFi yield data", detail: err.message });
   }
@@ -513,7 +548,8 @@ for (const feed of feedRegistry) {
   app.get(feed.endpoint, async (_req, res) => {
     try {
       const data = await fetchLatestPublisherPayload({ slug, publisher });
-      res.json(data);
+      // X-BYTE-Attestation: sign the exact bytes we return (verify-before-act).
+      await sendAttested(res, data);
     } catch (err: any) {
       res.status(502).json({ error: `Failed to fetch ${slug}`, detail: err.message });
     }

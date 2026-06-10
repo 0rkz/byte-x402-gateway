@@ -1,7 +1,7 @@
 {
   "name": "@byte-protocol/x402-gateway",
   "version": "0.1.0",
-  "description": "x402-compatible HTTP gateway for Byte Protocol data feeds",
+  "description": "x402 gateway for BYTE — verified, provenance-first data for AI agents; pay per call in USDC, no API keys (Arbitrum Sepolia testnet)",
   "license": "MIT",
   "main": "dist/index.js",
   "scripts": {

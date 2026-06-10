@@ -1,0 +1,12 @@
+# BYTE x402 agent-pays demo (Python). Pinned to the x402 v2 line that matches
+# the gateway's @x402 v2.13.x server. The [evm,requests] extras pull eth-account
+# / web3 (EIP-3009 signing) and the requests client transport.
+#
+#   python3 -m venv .venv && . .venv/bin/activate
+#   pip install -r requirements.txt
+#
+x402[evm,requests]==2.12.0
+# Transitively installed by the extras above; pinned here for reproducibility:
+eth-account==0.13.7
+web3==7.16.0
+requests==2.34.2

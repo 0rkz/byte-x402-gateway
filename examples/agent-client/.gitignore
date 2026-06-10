@@ -1,0 +1,7 @@
+# Local example install/validation artifacts — not committed.
+node_modules/
+package-lock.json
+.venv/
+__pycache__/
+*.pyc
+.env
