@@ -119,6 +119,18 @@ export async function signCanonicalBytes(bodyBytes: Uint8Array): Promise<ByteAtt
  */
 export async function sendAttested(res: import("express").Response, obj: unknown): Promise<void> {
   const body = JSON.stringify(obj);
+  await sendAttestedRaw(res, body);
+}
+
+/**
+ * Attest and send a pre-serialized JSON body WITHOUT re-serializing it. For
+ * proxied upstreams whose payload is already canonically signed (e.g. the
+ * address-reputation verdict's embedded attestation over insertion-order
+ * minified JSON, which may carry >2^53 integers like balance_wei): a
+ * parse/re-stringify round-trip could change the bytes and break the inner
+ * attestation, so the gateway signs and forwards the upstream bytes verbatim.
+ */
+export async function sendAttestedRaw(res: import("express").Response, body: string): Promise<void> {
   const att = await signCanonicalBytes(new TextEncoder().encode(body));
   res.type("application/json");
   if (att) res.setHeader("X-BYTE-Attestation", JSON.stringify(att));

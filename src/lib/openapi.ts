@@ -19,7 +19,7 @@
  * buildOpenApiDoc() reads `config` so price/network stay in sync with the
  * running gateway — never hard-code the amount here.
  */
-import { config, feedRegistry } from "./config.js";
+import { config, feedRegistry, networkInfo } from "./config.js";
 
 /**
  * Feeds that are exposed as synchronous POST request-response oracles (carry a
@@ -29,7 +29,7 @@ import { config, feedRegistry } from "./config.js";
  * a publisher-backed feed AND a POST oracle, so it gets BOTH a GET (latest
  * broadcast) and a POST (synchronous query) operation below.
  */
-const POST_ORACLE_IDS = new Set(["fact-oracle", "evidence-pack", "usc-statute"]);
+const POST_ORACLE_IDS = new Set(["fact-oracle", "evidence-pack", "usc-statute", "address-reputation"]);
 
 /** Per-oracle request-body schema, keyed by feed id. Each oracle takes a
  *  different question/claim/citation field plus optional on-chain delivery
@@ -99,6 +99,32 @@ const ORACLE_REQUEST_SCHEMAS: Record<string, object> = {
     },
     required: ["citation"],
   },
+  "address-reputation": {
+    type: "object",
+    properties: {
+      domain: {
+        type: "string",
+        minLength: 1,
+        description: "The payee's web domain, e.g. \"github.com\". BLOCK if it doesn't resolve or hits the blocklist.",
+      },
+      address: {
+        type: "string",
+        pattern: "^0x[0-9a-fA-F]{40}$",
+        description: "The receiving address about to be paid. On-chain history + blocklist are checked on the selected chain.",
+      },
+      amount: {
+        type: "integer",
+        minimum: 0,
+        description: "Optional. The payment amount in atomic units — logged with the query and bound into the verdict context.",
+      },
+      chain: {
+        type: "string",
+        enum: ["base", "arbitrum"],
+        description: "Chain for the on-chain receiving-address signals (default \"base\" = Base mainnet; \"arbitrum\" = Arbitrum Sepolia testnet).",
+      },
+    },
+    required: ["domain", "address"],
+  },
 };
 
 /** Per-feed x-payment-info block — price varies by expected payload size. */
@@ -124,7 +150,7 @@ function paidResponses(okSchema: object, priceAtomic: string) {
     "402": {
       description:
         `Payment Required — pay the x402 challenge in the payment-required ` +
-        `header (x402 v2) and retry. $${usd} USDC on Arbitrum Sepolia.`,
+        `header (x402 v2) and retry. $${usd} USDC on ${networkInfo().label}.`,
     },
     "502": { description: "Upstream data source unavailable" },
   };
@@ -228,6 +254,70 @@ const factQueryResponseSchema = {
     },
   },
   required: ["request_id", "publisher"],
+};
+
+// address-reputation returns its verdict SYNCHRONOUSLY (not the on-chain ack
+// shape) — { answer, attestation, broadcast }. Two independent receipts ride
+// the paid 200: the embedded `attestation` (the publisher's verdict-level
+// EIP-712 sig over the canonical answer bytes) and the gateway's
+// X-BYTE-Attestation header (byte-integrity receipt over the whole body).
+const addressReputationResponseSchema = {
+  type: "object",
+  properties: {
+    answer: {
+      type: "object",
+      properties: {
+        v: { const: "address-reputation/v1" },
+        ts: { type: "integer", description: "Unix seconds the verdict was produced." },
+        query: {
+          type: "object",
+          properties: {
+            domain: { type: "string" },
+            address: { type: "string" },
+            amount: { type: "integer" },
+            chain: { type: "string" },
+          },
+        },
+        verdict: {
+          type: "string",
+          enum: ["ALLOW", "WARN", "BLOCK"],
+          description: "Go/no-go: ALLOW = clear to pay; WARN = hold for a human / extra check; BLOCK = do not pay.",
+        },
+        score: { type: "integer", minimum: 0, maximum: 100 },
+        reasons: { type: "array", items: { type: "string" } },
+        signals: {
+          type: "object",
+          description: "The full signal set judged: domain (RDAP/TLS/DNS/Wayback), onchain (tx_count, balance, is_contract, is_delegated_eoa), blocklist hits.",
+        },
+        methodology: { type: "string", description: "Pinned ruleset id, e.g. \"ar-v1\" — frozen; verdicts are reproducible." },
+        input_hashes: { type: "object" },
+      },
+      required: ["v", "verdict", "score", "reasons", "methodology"],
+    },
+    attestation: {
+      type: "object",
+      description:
+        "Publisher's EIP-712 PayloadAttestation over keccak256 of the canonical " +
+        "(insertion-order, minified) answer bytes. Recompute the hash over `answer` " +
+        "AS RECEIVED and recover the signer before acting on the verdict.",
+      properties: {
+        payloadHash: { type: "string" },
+        payloadLength: { type: "integer" },
+        deadline: { type: "integer" },
+        signer: { type: "string" },
+        signature: { type: "string" },
+        domain: {
+          type: "object",
+          description: "EIP-712 domain {name:\"BYTE Library\", version:\"1\", chainId:421614, verifyingContract}. The consensus domain is anchored on Arbitrum (mainnet pending audit); the signature + byte-integrity is real regardless of which rail you paid on.",
+        },
+      },
+    },
+    broadcast: {
+      type: "object",
+      description: "On-chain broadcast status — disabled on this rail; the synchronous signed verdict is the product.",
+    },
+  },
+  required: ["answer"],
 };
 
 // Generic response shape for BYTE Library publisher-backed feeds — the
@@ -337,7 +427,8 @@ function bespokeOraclePaths(): Record<string, unknown> {
   for (const f of feedRegistry) {
     if (f.publisher) continue;            // publisher oracles handled above
     if (!POST_ORACLE_IDS.has(f.id)) continue;
-    if (f.id === "fact-oracle") continue; // fact-oracle is declared explicitly below
+    if (f.id === "fact-oracle") continue;         // declared explicitly below
+    if (f.id === "address-reputation") continue;  // declared explicitly below — synchronous verdict, not an on-chain ack
     paths[f.endpoint] = { post: oraclePostOperation(f) };
   }
   return paths;
@@ -347,6 +438,7 @@ export function buildOpenApiDoc() {
   const crypto = feed("crypto-top100");
   const defi = feed("defi-yields");
   const oracle = feed("fact-oracle");
+  const addressRep = feed("address-reputation");
 
   return {
     openapi: "3.1.0",
@@ -359,15 +451,15 @@ export function buildOpenApiDoc() {
         "provenance-stamped — covering crypto markets, DeFi yields, weather, " +
         "earthquakes, news, code-pulse, threat-intel, and a slashable " +
         "fact-oracle. Pay per call in USDC over x402 with no API keys — a " +
-        "wallet, not a secret on the box. Settlement is on Arbitrum Sepolia " +
-        "testnet (eip155:421614). Price is per-feed, derived from expected " +
+        "wallet, not a secret on the box. Settlement is on " +
+        `${networkInfo().label} (${config.network}). Price is per-feed, derived from expected ` +
         "payload size at " +
         `$${(Number(config.pricePerKBAtomic) / 1_000_000).toFixed(6)}/KB ` +
         `(floor $${(Number(config.priceFloorAtomic) / 1_000_000).toFixed(6)}).`,
       "x-guidance":
         "Paid endpoints return HTTP 402 with x402 v2 payment requirements " +
-        "in the `payment-required` header — pay the quoted USDC on Arbitrum " +
-        "Sepolia (network eip155:421614) and retry. Each feed has its own " +
+        "in the `payment-required` header — pay the quoted USDC on " +
+        `${networkInfo().label} (network ${config.network}) and retry. Each feed has its own ` +
         "price (see x-payment-info per operation); the catalog at GET /feeds " +
         "(free, ungated) lists every feed with its computed price and " +
         "expected payload size. POST /feeds/fact-oracle needs a JSON body: " +
@@ -426,6 +518,23 @@ export function buildOpenApiDoc() {
           responses: paidResponses(factQueryResponseSchema, oracle.priceAtomic),
         },
       },
+      "/feeds/address-reputation": {
+        post: {
+          operationId: "postAddressReputation",
+          summary: `Address Reputation — synchronous signed ALLOW/WARN/BLOCK verdict before you pay (${addressRep.price} per verdict)`,
+          description: addressRep.description,
+          tags: ["Feeds"],
+          security: [{ x402Payment: [] }],
+          "x-payment-info": paymentInfo(addressRep.priceAtomic),
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": { schema: ORACLE_REQUEST_SCHEMAS["address-reputation"] },
+            },
+          },
+          responses: paidResponses(addressReputationResponseSchema, addressRep.priceAtomic),
+        },
+      },
       ...bespokeOraclePaths(),
       ...indexerFeedPaths(),
       // NOTE: the free operational endpoints (GET /feeds catalog, GET /health)
@@ -443,7 +552,7 @@ export function buildOpenApiDoc() {
           description:
             "x402 pay-per-call. An unpaid request returns HTTP 402 with the " +
             "payment challenge in the `payment-required` header (x402 v2). Pay " +
-            "the quoted USDC on Arbitrum Sepolia (network eip155:421614) via an " +
+            `the quoted USDC on ${networkInfo().label} (network ${config.network}) via an ` +
             "x402 client, then retry with the settlement receipt. No API key — " +
             "a wallet signs an EIP-3009 `transferWithAuthorization` and the " +
             "facilitator settles on-chain. See the per-operation `x-payment-info` " +
@@ -457,6 +566,7 @@ export function buildOpenApiDoc() {
         FactQueryResponse: factQueryResponseSchema,
         ByteLibraryFeedResponse: byteLibraryFeedSchema,
         OracleAck: oracleAckSchema,
+        AddressReputationResponse: addressReputationResponseSchema,
       },
     },
   };

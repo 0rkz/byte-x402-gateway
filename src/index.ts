@@ -13,13 +13,14 @@ import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
-import { config, feedRegistry, DISCLAIMER_TEXT } from "./lib/config.js";
+import { config, feedRegistry, DISCLAIMER_TEXT, networkInfo } from "./lib/config.js";
 import { buildOpenApiDoc } from "./lib/openapi.js";
 import { fetchCryptoTop100 } from "./feeds/crypto.js";
 import { fetchDefiYields } from "./feeds/defi.js";
 import { fetchLatestPublisherPayload } from "./feeds/generic.js";
 import {
   sendAttested,
+  sendAttestedRaw,
   attestationEnabled,
   attesterAddress,
   attestationDomain,
@@ -48,6 +49,13 @@ const app = express();
 // Value "1" = trust exactly one hop (the local tunnel) — narrower than
 // `true` (trust all) and correct for our single-cloudflared topology.
 app.set("trust proxy", 1);
+
+// JSON body parsing for the POST oracle proxies. @x402/express documents that
+// it requires express.json(); without it req.body is undefined and every
+// oracle proxy silently forwarded `{}` upstream regardless of what the agent
+// sent. 32 KB cap — honest oracle queries are <1 KB; this stops the
+// "POST 100 MB" memory-pressure class (mirrors the feeds' own 16 KB caps).
+app.use(express.json({ limit: "32kb" }));
 
 // ---------------------------------------------------------------------------
 // x402 Payment Middleware
@@ -109,7 +117,7 @@ function buildAccepts(priceAtomic: string) {
 // request body; broadcast/scheduled feeds are GET. Some publisher-backed
 // oracles offer both (subscribe-then-listen via GET indexer proxy AND
 // synchronous request-response via POST proxy) — see usc-statute.
-const POST_ORACLES = new Set(["fact-oracle", "evidence-pack", "usc-statute"]);
+const POST_ORACLES = new Set(["fact-oracle", "evidence-pack", "usc-statute", "address-reputation"]);
 
 // Bazaar discovery extension per route. Minimal output examples per feed shape
 // — just enough for checkIfBazaarNeeded() in @x402/express to detect the
@@ -328,14 +336,15 @@ app.get("/openapi.json", (_req, res) => {
  * Free, ungated; self-updates from feedRegistry.
  */
 function buildX402Manifest() {
+  const net = networkInfo();
   return {
     x402Version: 1,
     name: "BYTE Library",
     description:
-      "Per-byte USDC data feeds + oracles for AI agents on Arbitrum. First-party, verifiable, no token. Arbitrum Sepolia testnet.",
+      `Per-byte USDC data feeds + oracles for AI agents. First-party, verifiable, no token. Settlement on ${net.label}.`,
     provider: { organization: "BYTEDev Inc.", url: "https://www.payperbyte.io" },
     network: config.network,
-    status: "testnet",
+    status: net.status,
     facilitator: config.facilitatorUrl,
     catalog: "https://x402.payperbyte.io/feeds",
     resources: feedRegistry.map((feed) => ({
@@ -376,10 +385,11 @@ app.get(["/x402-manifest", "/.well-known/x402"], (_req, res) => {
  * feedRegistry.
  */
 app.get("/.well-known/agent.json", (_req, res) => {
+  const net = networkInfo();
   res.json({
     name: "BYTE Library",
     description:
-      "Per-byte USDC data feeds + oracles for AI agents on Arbitrum. Subscribe to first-party feeds or pay-per-call via x402; every data response carries an EIP-712 PayloadAttestation receipt (X-BYTE-Attestation) you verify before acting.",
+      `Per-byte USDC data feeds + oracles for AI agents — pay-per-call via x402, settled in USDC on ${net.label}. Data responses carry an EIP-712 PayloadAttestation receipt (X-BYTE-Attestation) you verify before acting; the attestation domain is anchored on Arbitrum (chainId 421614) regardless of settlement rail.`,
     url: "https://x402.payperbyte.io",
     version: "0.3.0",
     provider: { organization: "BYTEDev Inc.", url: "https://www.payperbyte.io" },
@@ -409,7 +419,7 @@ app.get("/.well-known/agent.json", (_req, res) => {
       id: feed.id,
       name: feed.name,
       description: feed.description,
-      tags: [feed.disclaimerCategory, "x402", "usdc", "arbitrum"],
+      tags: [feed.disclaimerCategory, "x402", "usdc", net.chain],
     })),
     endpoints: {
       catalog: "https://x402.payperbyte.io/feeds",
@@ -445,11 +455,15 @@ app.get("/health", (_req, res) => {
 // Paid Endpoints
 // ---------------------------------------------------------------------------
 
-/** Top 25 cryptocurrencies by market cap. */
+/** Top 25 cryptocurrencies by market cap.
+ *  NOT attested: the feed was cut from 100 to 25 commodity coins — signing a
+ *  cut commodity payload produces a meaningless receipt that dilutes what
+ *  X-BYTE-Attestation means on the verdict feeds. Demo with address-reputation,
+ *  never this. */
 app.get("/feeds/crypto-top100", async (_req, res) => {
   try {
     const data = await fetchCryptoTop100();
-    await sendAttested(res, data);
+    res.json(data);
   } catch (err: any) {
     res.status(502).json({ error: "Failed to fetch crypto data", detail: err.message });
   }
@@ -535,6 +549,39 @@ app.post("/feeds/usc-statute", async (req, res) => {
     res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
   } catch (err: any) {
     res.status(502).json({ error: "usc-statute proxy failed", detail: err.message });
+  }
+});
+
+/**
+ * address-reputation — the agentic-payments go/no-go verdict (FEED_ROADMAP #1).
+ * Body: { domain: string, address: 0x…, amount?: int, chain?: "base"|"arbitrum" }
+ * 200: { answer: { verdict: ALLOW|WARN|BLOCK, score, reasons, signals, … },
+ *        attestation: { payloadHash, signature, signer, domain, … },
+ *        broadcast: { … disabled } }
+ *
+ * The 200 is forwarded BYTE-FOR-BYTE (no parse/re-stringify — the verdict's
+ * embedded attestation signs the canonical insertion-order bytes, and values
+ * like balance_wei can exceed 2^53, so a JSON round-trip could corrupt them)
+ * and the gateway signs those same bytes into X-BYTE-Attestation: the paid
+ * response carries both the publisher's verdict receipt and the gateway's
+ * transport receipt over identical bytes.
+ */
+app.post("/feeds/address-reputation", async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const upstream = await fetch(`${config.addressReputationUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await upstream.text();
+    if (upstream.ok) {
+      await sendAttestedRaw(res, text);
+    } else {
+      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    }
+  } catch (err: any) {
+    res.status(502).json({ error: "address-reputation proxy failed", detail: err.message });
   }
 });
 

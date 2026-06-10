@@ -61,11 +61,43 @@ export const config = {
   evidencePackUrl: process.env.EVIDENCE_PACK_URL || "https://evidence-pack.payperbyte.io",
   /** usc-statute oracle URL — Tier 1 bespoke proxy. */
   uscStatuteUrl: process.env.USC_STATUTE_URL || "https://usc-statute.payperbyte.io",
+  /**
+   * address-reputation oracle URL — the agentic-payments go/no-go verdict
+   * (FEED_ROADMAP #1). Defaults to the local loopback bind: the feed runs on
+   * the same host (byte-address-reputation.service, port 8088) and is NOT
+   * exposed via cloudflared — this paywalled gateway route is its only public
+   * surface, by design.
+   */
+  addressReputationUrl: process.env.ADDRESS_REPUTATION_URL || "http://127.0.0.1:8088",
   // (Removed `byteIndexerUrl` 2026-05-25 — was dead code; the actual data
   // path uses DISCOVERY_API_URL read in feeds/generic.ts, defaulting to
   // https://api.payperbyte.io. The historical BYTE_INDEXER_URL env was a
   // misleading no-op.)
 };
+
+/**
+ * Human label + status per CAIP-2 settlement network. Every discovery surface
+ * (x402 manifest, agent card, OpenAPI) derives its network wording from here
+ * via networkInfo() instead of hardcoding "Arbitrum Sepolia" — so repointing
+ * NETWORK (e.g. the Base mainnet cutover) updates every surface atomically.
+ *
+ * NOTE: this is the SETTLEMENT rail only. The EIP-712 "BYTE Library"
+ * attestation domain stays anchored on chainId 421614 (ATTESTATION_CHAIN_ID,
+ * see attestation.ts) regardless of where payment settles — flipping it would
+ * fork the consensus domain.
+ */
+const NETWORK_INFO: Record<string, { label: string; chain: string; status: "mainnet" | "testnet" }> = {
+  "eip155:421614": { label: "Arbitrum Sepolia (testnet)", chain: "arbitrum", status: "testnet" },
+  "eip155:42161": { label: "Arbitrum One", chain: "arbitrum", status: "mainnet" },
+  "eip155:8453": { label: "Base", chain: "base", status: "mainnet" },
+  "eip155:84532": { label: "Base Sepolia (testnet)", chain: "base", status: "testnet" },
+};
+
+/** Settlement-network display info for the configured NETWORK. Unknown CAIP-2
+ *  ids fall back to the raw id + testnet status (never overclaim mainnet). */
+export function networkInfo(): { label: string; chain: string; status: "mainnet" | "testnet" } {
+  return NETWORK_INFO[config.network] ?? { label: config.network, chain: config.network, status: "testnet" };
+}
 
 /**
  * Universal disclaimer taxonomy (LAUNCH_PLAN §14). Every feed declares one.
@@ -225,6 +257,9 @@ export const feedRegistry: FeedMetadata[] = [
   // evidence-pack uses bespoke pricing (per §13 it's $0.05 base + $0.005/source)
   // — not the default per-KB formula. priceAtomic override is wired below.
   customPricedFeed("evidence-pack", "Evidence Pack Oracle", "RAG-citable meta-oracle: retrieve from BYTE Library factual feeds + LLM grounding + signed verdict with sources. Higher-margin product per LAUNCH_PLAN §13.", "on-demand", 4000, "general", "50000"),
+  // address-reputation is decision-priced, not size-priced (a wrong ALLOW on a
+  // drainer address = irreversible USDC loss) — same $0.05 tier as evidence-pack.
+  customPricedFeed("address-reputation", "Address Reputation Oracle", "Agentic-payments go/no-go verdict: synchronous signed ALLOW/WARN/BLOCK for (domain, receiving address, amount, chain) BEFORE releasing USDC. ar-v1 ruleset over RDAP/TLS/DNS/Wayback domain signals + on-chain receiving-address signals + curated known-bad blocklist. The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting.", "on-demand", 2500, "commerce", "50000"),
 ];
 
 /** Build a bespoke (upstream-API-backed) feed entry. */
