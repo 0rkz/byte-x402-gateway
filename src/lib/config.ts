@@ -18,6 +18,15 @@ export const config = {
    * Override via env when running against a different facilitator.
    */
   facilitatorUrl: process.env.FACILITATOR_URL || "http://127.0.0.1:3403",
+  /**
+   * Facilitator request-auth mode. "" (default) = no auth headers — xpay's
+   * self-hosted facilitator needs none, so the default path is unchanged.
+   * "cdp" = attach Coinbase CDP request-auth (via @coinbase/x402, which reads
+   * CDP_API_KEY_ID / CDP_API_KEY_SECRET from the env — keep those in the
+   * gitignored .env.attestation, NOT the tracked deploy env). Flip this to "cdp"
+   * together with FACILITATOR_URL to unblock §3 CDP/Bazaar indexing.
+   */
+  facilitatorAuth: (process.env.FACILITATOR_AUTH || "").toLowerCase(),
   /** CAIP-2 network identifier (default: Arbitrum Sepolia) */
   network: (process.env.NETWORK || "eip155:421614") as `${string}:${string}`,
   /**

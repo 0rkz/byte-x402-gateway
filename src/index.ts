@@ -12,7 +12,7 @@ import express from "express";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
-import { HTTPFacilitatorClient } from "@x402/core/server";
+import { HTTPFacilitatorClient, type FacilitatorConfig } from "@x402/core/server";
 import { config, feedRegistry, DISCLAIMER_TEXT, networkInfo } from "./lib/config.js";
 import { buildOpenApiDoc } from "./lib/openapi.js";
 import { fetchCryptoTop100 } from "./feeds/crypto.js";
@@ -197,7 +197,30 @@ function isPaidRoute(req: any): boolean {
  */
 async function setupPaymentMiddleware(): Promise<boolean> {
   try {
-    const facilitator = new HTTPFacilitatorClient({ url: config.facilitatorUrl });
+    // Facilitator auth is OFF by default (xpay self-hosted needs none), so this
+    // is byte-for-byte the previous `new HTTPFacilitatorClient({ url })`. Setting
+    // FACILITATOR_AUTH=cdp attaches Coinbase CDP request-auth — flip it together
+    // with FACILITATOR_URL to the CDP facilitator to unblock §3 (Bazaar/CDP).
+    const facilitatorConfig: FacilitatorConfig = { url: config.facilitatorUrl };
+    if (config.facilitatorAuth === "cdp") {
+      // Lazy, variable-specifier import: keeps `tsc --noEmit` green while
+      // @coinbase/x402 is not yet installed (the gate is off in every shipped
+      // config). Before flipping the gate: `npm i @coinbase/x402` and confirm the
+      // CDP key env-var names + the export against the installed version
+      // (current shape: `facilitator.createAuthHeaders`).
+      const pkg: string = "@coinbase/x402";
+      const cdp: any = await import(pkg);
+      const createAuthHeaders = cdp?.facilitator?.createAuthHeaders ?? cdp?.createAuthHeaders;
+      if (typeof createAuthHeaders !== "function") {
+        throw new Error(
+          "FACILITATOR_AUTH=cdp but @coinbase/x402 exposed no createAuthHeaders — " +
+            "run `npm i @coinbase/x402` and verify the export (expected facilitator.createAuthHeaders).",
+        );
+      }
+      facilitatorConfig.createAuthHeaders = createAuthHeaders;
+      console.log("[x402-gateway] CDP facilitator auth ENABLED (createAuthHeaders attached)");
+    }
+    const facilitator = new HTTPFacilitatorClient(facilitatorConfig);
     const server = new x402ResourceServer(facilitator)
       .register(config.network, new ExactEvmScheme());
 
