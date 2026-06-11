@@ -247,7 +247,9 @@ export const feedRegistry: FeedMetadata[] = [
   indexerFeed("news-feed", "News (LLM-curated)", "LLM-curated news headlines with source citations", "300s", 1300, "0x551a4ed7f4a8cf5170a5efc5a5d1266386962e73", "general"),
   indexerFeed("code-pulse", "Code Pulse", "Repo / package release tracker — latest releases of high-signal OSS projects", "600s", 2100, "0x15bfc9492940ff2620118f4611eaed949a8415db", "general"),
   indexerFeed("runtime-eol", "Runtime EOL", "End-of-life dates and status for language runtimes, frameworks, OSes (endoflife.date)", "daily", 14200, "0x17a67d0d18f9b93f064a23d2076074ea8802216f", "general"),
-  indexerFeed("threat-intel", "Threat Intel", "Live IOCs, CVE highlights, exploit signals from public threat-intel feeds", "300s", 5300, "0xb90b00f891dc534a5b59c60170661b868f3c26de", "general"),
+  // Copy fixed 2026-06-11 (FEED_ROADMAP integrity item): the feed relays public
+  // CISA/NVD data — it does not produce first-party IOC detection. Don't overclaim.
+  indexerFeed("threat-intel", "Security Advisories Digest", "Recent CVE highlights + CISA known-exploited-vulnerability entries, relayed from public sources (NVD, CISA KEV)", "300s", 5300, "0xb90b00f891dc534a5b59c60170661b868f3c26de", "general"),
   indexerFeed("btc-metrics", "BTC Metrics", "Bitcoin chain metrics: hashrate, mempool, mining stats", "120s", 500, "0x07b8c1d531958a3193ea527aea52a9f26bcfe91b", "general"),
   indexerFeed("pkg-facts", "Package Facts", "Per-package facts for popular npm/PyPI packages (latest versions, deprecations, advisories)", "on-demand", 1000, "0x14cf5b197acd9fe42b51570d812142b8eb7ce131", "general"),
   indexerFeed("cve-facts", "CVE Facts", "Detailed facts on individual CVEs (NVD scoring, affected versions, fix availability)", "on-demand", 1000, "0x2c95b5af64b305034caea44f13a546d1377b32ac", "general"),
