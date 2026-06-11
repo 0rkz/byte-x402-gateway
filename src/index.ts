@@ -455,6 +455,40 @@ app.get("/.well-known/agent.json", (_req, res) => {
 });
 
 /**
+ * ERC-8004 agent registration file (/.well-known/agent-registration.json).
+ * The Identity Registry's agentURI must resolve to THIS spec shape
+ * (eip-8004#registration-v1) — the A2A agent card does NOT satisfy it; it is
+ * nested below as a service endpoint instead. ERC8004_AGENT_ID is set in the
+ * deploy env after the one-time register(string) mint on Arbitrum Sepolia
+ * (registry 0x8004A818BFB912233c491871b3d84c89A494BD9e — the registry's own
+ * EIP-712 domain is unrelated to the consensus-critical "BYTE Library" one).
+ * No supportedTrust field: absent = discovery-only per spec — no trust-model
+ * or traction claims.
+ */
+app.get("/.well-known/agent-registration.json", (_req, res) => {
+  const agentId = process.env.ERC8004_AGENT_ID;
+  res.json({
+    type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+    name: "BYTE Library",
+    description:
+      "Per-byte USDC data feeds and oracles for AI agents (display name: PayPerByte). 22 paid x402 resources served from https://x402.payperbyte.io, settled in USDC on Base mainnet (eip155:8453); flagship POST /feeds/address-reputation at $0.05. Every data response carries an EIP-712 PayloadAttestation receipt (X-BYTE-Attestation header) that callers verify before acting.",
+    image: "https://raw.githubusercontent.com/0rkz/byte-mcp-server/main/assets/logo-400x400.png",
+    services: [
+      { name: "web", endpoint: "https://x402.payperbyte.io" },
+      { name: "A2A", endpoint: "https://x402.payperbyte.io/.well-known/agent.json", version: "0.3.0" },
+      { name: "MCP", endpoint: "https://mcp.payperbyte.io/mcp", version: "2025-06-18" },
+      { name: "x402", endpoint: "https://x402.payperbyte.io/.well-known/x402.json" },
+      { name: "OpenAPI", endpoint: "https://x402.payperbyte.io/openapi.json" },
+    ],
+    x402Support: true,
+    active: true,
+    registrations: agentId
+      ? [{ agentId: Number(agentId), agentRegistry: "eip155:421614:0x8004A818BFB912233c491871b3d84c89A494BD9e" }]
+      : [],
+  });
+});
+
+/**
  * Favicon — x402scan (and browsers) fetch /favicon.ico to show the listing
  * icon. Served from the repo root; WorkingDirectory is the gateway dir so
  * process.cwd()-relative resolution holds under systemd. Free, ungated.
