@@ -292,9 +292,10 @@ export const feedRegistry: FeedMetadata[] = [
   indexerFeed("perp-funding", "Perp Funding Rates", "Cross-venue perpetual-swap funding rates (Hyperliquid, dYdX, Aevo live; GMX + Vertex coming v1.1) + spread. Annualized.", "300s", 1500, "0x533f447c2b82cf903e8189778636ef96c652c892", "financial"),
   indexerFeed("bridge-flow", "Bridge Latency Observatory", "First-party cross-chain bridge route-latency probes — per-route attestation/finality observation across major USDC bridges (CCTP, LayerZero, Across, Stargate, Wormhole, Hop). Per-bridge volume aggregation coming v1.1.", "300s", 4000, "0x5d8806b0a277a7ca119ee95c364b0522487b5516", "financial"),
   indexerFeed("usc-statute", "US Code Statute Oracle", "On-demand current text of a US Code section, public-domain, with content hash + source URLs. Q&A oracle.", "on-demand", 2500, "0xd056caa08710473649d48e9e9e7c126d4f24d870", "legal"),
-  // evidence-pack uses bespoke pricing (per §13 it's $0.05 base + $0.005/source)
-  // — not the default per-KB formula. priceAtomic override is wired below.
-  customPricedFeed("evidence-pack", "Evidence Pack Oracle", "RAG-citable meta-oracle: retrieve from BYTE Library factual feeds + LLM grounding + signed verdict with sources. Higher-margin product per LAUNCH_PLAN §13.", "on-demand", 4000, "general", "50000"),
+  // evidence-pack is value/compute-priced (higher-margin RAG meta-oracle per
+  // §13), NOT per-KB. Raised to $0.10 (2026-06-12) — its buyers aren't the
+  // signed-vs-free skeptics, so the premium signals the LLM+retrieval cost.
+  customPricedFeed("evidence-pack", "Evidence Pack Oracle", "RAG-citable meta-oracle: retrieve from BYTE Library factual feeds + LLM grounding + signed verdict with sources. Higher-margin product per LAUNCH_PLAN §13.", "on-demand", 4000, "general", "100000"),
   // address-reputation is decision-priced, not size-priced (a wrong ALLOW on a
   // drainer address = irreversible USDC loss) — same $0.05 tier as evidence-pack.
   customPricedFeed("address-reputation", "Address Reputation Oracle", "Agentic-payments go/no-go verdict: synchronous signed ALLOW/WARN/BLOCK for (domain, receiving address, amount, chain) BEFORE releasing USDC. ar-v1 ruleset over RDAP/TLS/DNS/Wayback domain signals + on-chain receiving-address signals + curated known-bad blocklist. The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting.", "on-demand", 2500, "commerce", "50000"),
