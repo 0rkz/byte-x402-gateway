@@ -263,34 +263,28 @@ const TIER1_PLACEHOLDER = "0x0000000000000000000000000000000000000000" as const;
 export const feedRegistry: FeedMetadata[] = [
   bespokeFeed("crypto-top100", "Crypto Top 25", "Top 25 cryptocurrencies by market cap with price, volume, and 24h change", "60s", 6000, "financial"),
   bespokeFeed("defi-yields", "DeFi Yields", "Top DeFi protocol yields across major chains", "120s", 10000, "financial"),
-  bespokeFeed("fact-oracle", "Byte Fact Oracle", "Slashable factual question/answer via fact-oracle.payperbyte.io — Claude web search + SelfCheckGPT NLI gate, delivered on-chain. Gateway returns the 202 ACK; the answer is broadcast on-chain to the subscriber.", "on-demand", 150, "general"),
+  bespokeFeed("fact-oracle", "Byte Fact Oracle", "Slashable factual question/answer via fact-oracle.payperbyte.io — LLM web research + SelfCheckGPT NLI gate, delivered on-chain. Gateway returns the 202 ACK; the answer is broadcast on-chain to the subscriber.", "on-demand", 150, "general"),
   // ── BYTE Library publisher feeds (served via the generic discovery-api proxy)
   // Each entry's `publisher` is the on-chain Arbitrum address registered on
   // DataRegistry; the gateway proxies the latest BroadcastStreamed payload
   // for that publisher. `expectedSizeBytes` is sampled from recent broadcasts.
-  indexerFeed("weather", "Weather (US, multi-city)", "NWS weather forecasts for 5 US cities (NYC, LA, Chicago, Houston, Miami)", "60s", 4400, "0xa820763c023a929e83c59e4fd5a623e5a8efe941", "general"),
-  indexerFeed("earthquakes", "Earthquakes", "USGS recent significant earthquakes worldwide (M4.0+)", "120s", 300, "0xa1a55406de233901257aec7b499a26f040ba3cfa", "general"),
-  indexerFeed("space-weather", "Space Weather", "NOAA SWPC solar activity, geomagnetic storms, Kp index", "300s", 500, "0x5c3b05e1b6654d96445193d98b39e2aa4ddffdc4", "general"),
-  indexerFeed("news-feed", "News (LLM-curated)", "LLM-curated news headlines with source citations", "300s", 1300, "0x551a4ed7f4a8cf5170a5efc5a5d1266386962e73", "general"),
-  indexerFeed("code-pulse", "Code Pulse", "Repo / package release tracker — latest releases of high-signal OSS projects", "600s", 2100, "0x15bfc9492940ff2620118f4611eaed949a8415db", "general"),
+  indexerFeed("weather", "Weather (US, multi-city)", "NWS weather forecasts for 5 US cities (NYC, LA, Chicago, Houston, Miami)", "3600s", 4400, "0xa820763c023a929e83c59e4fd5a623e5a8efe941", "general"),
+  indexerFeed("earthquakes", "Earthquakes", "USGS recent earthquakes worldwide (M2.5+)", "900s", 300, "0xa1a55406de233901257aec7b499a26f040ba3cfa", "general"),
+  indexerFeed("space-weather", "Space Weather", "NOAA SWPC solar activity, geomagnetic storms, Kp index", "3600s", 500, "0x5c3b05e1b6654d96445193d98b39e2aa4ddffdc4", "general"),
+  indexerFeed("news-feed", "News (LLM-curated)", "LLM-curated news headlines with source citations", "1800s", 1300, "0x551a4ed7f4a8cf5170a5efc5a5d1266386962e73", "general"),
+  indexerFeed("code-pulse", "Code Pulse", "Repo / package release tracker — latest releases of high-signal OSS projects", "1800s", 2100, "0x15bfc9492940ff2620118f4611eaed949a8415db", "general"),
   indexerFeed("runtime-eol", "Runtime EOL", "End-of-life dates and status for language runtimes, frameworks, OSes (endoflife.date)", "daily", 14200, "0x17a67d0d18f9b93f064a23d2076074ea8802216f", "general"),
   // Copy fixed 2026-06-11 (FEED_ROADMAP integrity item): the feed relays public
   // CISA/NVD data — it does not produce first-party IOC detection. Don't overclaim.
-  indexerFeed("threat-intel", "Security Advisories Digest", "Recent CVE highlights + CISA known-exploited-vulnerability entries, relayed from public sources (NVD, CISA KEV)", "300s", 5300, "0xb90b00f891dc534a5b59c60170661b868f3c26de", "general"),
-  indexerFeed("btc-metrics", "BTC Metrics", "Bitcoin chain metrics: hashrate, mempool, mining stats", "120s", 500, "0x07b8c1d531958a3193ea527aea52a9f26bcfe91b", "general"),
-  indexerFeed("pkg-facts", "Package Facts", "Per-package facts for popular npm/PyPI packages (latest versions, deprecations, advisories)", "on-demand", 1000, "0x14cf5b197acd9fe42b51570d812142b8eb7ce131", "general"),
-  indexerFeed("cve-facts", "CVE Facts", "Detailed facts on individual CVEs (NVD scoring, affected versions, fix availability)", "on-demand", 1000, "0x2c95b5af64b305034caea44f13a546d1377b32ac", "general"),
-  indexerFeed("wiki-facts", "Wikipedia Facts", "Sourced answers from Wikipedia + Wikidata for general-knowledge questions", "on-demand", 1000, "0x60c349d98c0c4f8e9768a2bb7bddf4f1281231d4", "general"),
-  indexerFeed("merchant-trust", "Merchant Trust", "Trust-score signals for merchants/sellers — sanctions, scam-report aggregation, age-of-domain", "on-demand", 1000, "0xbc219e76d8b04197380baec27118d98f1e438d7a", "commerce"),
+  indexerFeed("threat-intel", "Security Advisories Digest", "Recent CVE highlights + CISA known-exploited-vulnerability entries, relayed from public sources (NVD, CISA KEV)", "3600s", 5300, "0xb90b00f891dc534a5b59c60170661b868f3c26de", "general"),
   // ── BYTE Library Tier 1 publisher feeds (Mainnet 50-feed plan, 2026-05-25)
   // The Tier 1 cohort ships 6 new items. Replace TIER1_PLACEHOLDER with the
   // on-chain publisher address from the registerPublisher tx. expectedSizeBytes
   // estimates per the launch-plan-review §8 size-class table; resample once
   // a representative payload is broadcast.
-  indexerFeed("x402-pulse", "x402 Network Pulse", "Rolling-window metrics for the BYTE x402 facilitator: verify/settle counts, per-network/scheme breakdowns, top payers, optional on-chain cross-check.", "60s", 3000, "0x96cf11a1f9aa09dcd8fca91f6d45bd7cc5049c69", "commerce"),
-  indexerFeed("stablecoin-rails", "Stablecoin Rails", "Cross-chain stablecoin supply (USDC/USDT/DAI/PYUSD) + Circle iris-api health + first-party CCTP route-latency probes.", "300s", 4000, "0x48faae04641bca4acaa5a030f4b0b97f1184b167", "commerce"),
+  indexerFeed("x402-pulse", "x402 Network Pulse", "Rolling-window metrics for the BYTE x402 facilitator: verify/settle counts, per-network/scheme breakdowns, top payers, optional on-chain cross-check. Metrics populate once the BYTE facilitator sees live traffic; currently pre-launch (zero-baseline).", "60s", 3000, "0x96cf11a1f9aa09dcd8fca91f6d45bd7cc5049c69", "commerce"),
+  indexerFeed("stablecoin-rails", "Stablecoin Rails", "Cross-chain stablecoin supply (USDC/USDT/DAI/PYUSD) + Circle iris-api health.", "300s", 4000, "0x48faae04641bca4acaa5a030f4b0b97f1184b167", "commerce"),
   indexerFeed("perp-funding", "Perp Funding Rates", "Cross-venue perpetual-swap funding rates (Hyperliquid, dYdX, Aevo live; GMX + Vertex coming v1.1) + spread. Annualized.", "300s", 1500, "0x533f447c2b82cf903e8189778636ef96c652c892", "financial"),
-  indexerFeed("bridge-flow", "Bridge Latency Observatory", "First-party cross-chain bridge route-latency probes — per-route attestation/finality observation across major USDC bridges (CCTP, LayerZero, Across, Stargate, Wormhole, Hop). Per-bridge volume aggregation coming v1.1.", "300s", 4000, "0x5d8806b0a277a7ca119ee95c364b0522487b5516", "financial"),
   indexerFeed("usc-statute", "US Code Statute Oracle", "On-demand current text of a US Code section, public-domain, with content hash + source URLs. Q&A oracle.", "on-demand", 2500, "0xd056caa08710473649d48e9e9e7c126d4f24d870", "legal"),
   // evidence-pack is value/compute-priced (higher-margin RAG meta-oracle per
   // §13), NOT per-KB. Raised to $0.10 (2026-06-12) — its buyers aren't the
