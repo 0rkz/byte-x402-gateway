@@ -117,7 +117,7 @@ function buildAccepts(priceAtomic: string) {
 // request body; broadcast/scheduled feeds are GET. Some publisher-backed
 // oracles offer both (subscribe-then-listen via GET indexer proxy AND
 // synchronous request-response via POST proxy) — see usc-statute.
-const POST_ORACLES = new Set(["fact-oracle", "evidence-pack", "usc-statute", "address-reputation"]);
+const POST_ORACLES = new Set(["fact-oracle", "evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot"]);
 
 // Bazaar discovery extension per route. Minimal output examples per feed shape
 // — just enough for checkIfBazaarNeeded() in @x402/express to detect the
@@ -639,6 +639,114 @@ app.post("/feeds/address-reputation", async (req, res) => {
     }
   } catch (err: any) {
     res.status(502).json({ error: "address-reputation proxy failed", detail: err.message });
+  }
+});
+
+/**
+ * pkg-verdict — supply-chain install gate (FEED_ROADMAP).
+ * Body: { ecosystem: "npm"|"pypi", package: string, version?: string }
+ * 200: { answer: { verdict: ALLOW|WARN|BLOCK, … }, attestation: { … }, broadcast: { … } }
+ *
+ * Forwarded BYTE-FOR-BYTE (sendAttestedRaw) — the feed's embedded EIP-712
+ * PayloadAttestation signs the canonical answer bytes; a JSON round-trip
+ * would corrupt the insertion-order canonical form.
+ */
+app.post("/feeds/pkg-verdict", async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const upstream = await fetch(`${config.pkgVerdictUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await upstream.text();
+    if (upstream.ok) {
+      await sendAttestedRaw(res, text);
+    } else {
+      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    }
+  } catch (err: any) {
+    res.status(502).json({ error: "pkg-verdict proxy failed", detail: err.message });
+  }
+});
+
+/**
+ * sanctions-screen — OFAC SDN + Consolidated sanctions screening.
+ * Body: { address?: 0x…, name?: string, chain?: string }  (at least one of address|name)
+ * 200: { answer: { verdict: ALLOW|WARN|BLOCK, list_state, … }, attestation: { … }, broadcast: { … } }
+ *
+ * Forwarded BYTE-FOR-BYTE (sendAttestedRaw).
+ */
+app.post("/feeds/sanctions-screen", async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const upstream = await fetch(`${config.sanctionsScreenUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await upstream.text();
+    if (upstream.ok) {
+      await sendAttestedRaw(res, text);
+    } else {
+      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    }
+  } catch (err: any) {
+    res.status(502).json({ error: "sanctions-screen proxy failed", detail: err.message });
+  }
+});
+
+/**
+ * liquidation-stream — Hawkes cascade-risk regime oracle.
+ * Body: { asset: string, window_h?: number }
+ * 200: { answer: { verdict: SUBCRITICAL|NEAR_CRITICAL|SUPERCRITICAL|INSUFFICIENT_DATA, … },
+ *        attestation: { … }, broadcast: { … } }
+ *
+ * Forwarded BYTE-FOR-BYTE (sendAttestedRaw).
+ */
+app.post("/feeds/liquidation-stream", async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const upstream = await fetch(`${config.liquidationStreamUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await upstream.text();
+    if (upstream.ok) {
+      await sendAttestedRaw(res, text);
+    } else {
+      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    }
+  } catch (err: any) {
+    res.status(502).json({ error: "liquidation-stream proxy failed", detail: err.message });
+  }
+});
+
+/**
+ * positioning-snapshot — cross-venue perp positioning snapshot.
+ * Body: { assets?: string[] }  (default BTC,ETH,SOL,ARB,AVAX)
+ * 200: { answer: { verdict: COMPLETE|PARTIAL|UNAVAILABLE, signals: { assets: […] }, … },
+ *        attestation: { … }, broadcast: { … } }
+ *
+ * Forwarded BYTE-FOR-BYTE (sendAttestedRaw).
+ */
+app.post("/feeds/positioning-snapshot", async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const upstream = await fetch(`${config.positioningSnapshotUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await upstream.text();
+    if (upstream.ok) {
+      await sendAttestedRaw(res, text);
+    } else {
+      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    }
+  } catch (err: any) {
+    res.status(502).json({ error: "positioning-snapshot proxy failed", detail: err.message });
   }
 });
 

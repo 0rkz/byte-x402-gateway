@@ -78,6 +78,33 @@ export const config = {
    * surface, by design.
    */
   addressReputationUrl: process.env.ADDRESS_REPUTATION_URL || "http://127.0.0.1:8088",
+  /**
+   * pkg-verdict oracle URL — supply-chain install gate (FEED_ROADMAP).
+   * Runs on the same host (byte-pkg-verdict.service, port 8091); NOT exposed
+   * via cloudflared — this paywalled gateway route is its only public surface.
+   */
+  pkgVerdictUrl: process.env.PKG_VERDICT_URL || "http://127.0.0.1:8091",
+  /**
+   * sanctions-screen oracle URL — OFAC SDN + Consolidated screening.
+   * Runs on the same host (byte-sanctions-screen.service, port 8092); NOT
+   * exposed via cloudflared — this paywalled gateway route is its only public
+   * surface.
+   */
+  sanctionsScreenUrl: process.env.SANCTIONS_SCREEN_URL || "http://127.0.0.1:8092",
+  /**
+   * liquidation-stream oracle URL — Hawkes cascade-risk regime oracle.
+   * Runs on the same host (byte-liquidation-stream-api.service, port 8089);
+   * NOT exposed via cloudflared — this paywalled gateway route is its only
+   * public surface.
+   */
+  liquidationStreamUrl: process.env.LIQUIDATION_STREAM_URL || "http://127.0.0.1:8089",
+  /**
+   * positioning-snapshot oracle URL — cross-venue perp positioning snapshot.
+   * Runs on the same host (byte-positioning-snapshot-api.service, port 8090);
+   * NOT exposed via cloudflared — this paywalled gateway route is its only
+   * public surface.
+   */
+  positioningSnapshotUrl: process.env.POSITIONING_SNAPSHOT_URL || "http://127.0.0.1:8090",
   // (Removed `byteIndexerUrl` 2026-05-25 — was dead code; the actual data
   // path uses DISCOVERY_API_URL read in feeds/generic.ts, defaulting to
   // https://api.payperbyte.io. The historical BYTE_INDEXER_URL env was a
@@ -271,6 +298,14 @@ export const feedRegistry: FeedMetadata[] = [
   // address-reputation is decision-priced, not size-priced (a wrong ALLOW on a
   // drainer address = irreversible USDC loss) — same $0.05 tier as evidence-pack.
   customPricedFeed("address-reputation", "Address Reputation Oracle", "Agentic-payments go/no-go verdict: synchronous signed ALLOW/WARN/BLOCK for (domain, receiving address, amount, chain) BEFORE releasing USDC. ar-v1 ruleset over RDAP/TLS/DNS/Wayback domain signals + on-chain receiving-address signals + curated known-bad blocklist. The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting.", "on-demand", 2500, "commerce", "50000"),
+  // pkg-verdict: decision-priced $0.05 — install-gate verdict, same tier as address-reputation.
+  customPricedFeed("pkg-verdict", "Package Verdict Oracle", "Signed ALLOW/WARN/BLOCK on installing a package@version: OSV.dev malicious-corpus + typosquat distance + registry signals. Verify before you install.", "on-demand", 2500, "general", "50000"),
+  // sanctions-screen: decision-priced $0.05 — compliance go/no-go, same tier as address-reputation.
+  customPricedFeed("sanctions-screen", "Sanctions Screen Oracle", "Signed, version-pinned OFAC SDN + Consolidated screening on an address or name; every answer embeds the pinned list-state (date + sha256) it was judged against.", "on-demand", 2500, "legal", "50000"),
+  // liquidation-stream: per-KB priced on expectedSizeBytes=1620 (~$0.008) — market data.
+  bespokeFeed("liquidation-stream", "Liquidation Stream Oracle", "Hawkes branching-ratio (self-excitation) verdict over a first-party realized-liquidation archive: SUBCRITICAL/NEAR_CRITICAL/SUPERCRITICAL.", "on-demand", 1620, "financial"),
+  // positioning-snapshot: per-KB priced on expectedSizeBytes=7480 (~$0.037) — market data.
+  bespokeFeed("positioning-snapshot", "Positioning Snapshot Oracle", "Cross-venue perp positioning (funding + open interest) from Hyperliquid, dYdX v4, Aevo; raw fields, abstains honestly where a venue lacks data.", "on-demand", 7480, "financial"),
 ];
 
 /** Build a bespoke (upstream-API-backed) feed entry. */
