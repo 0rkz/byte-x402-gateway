@@ -268,7 +268,8 @@ function fmtUsdc(atomic: string): string {
 const TIER1_PLACEHOLDER = "0x0000000000000000000000000000000000000000" as const;
 
 export const feedRegistry: FeedMetadata[] = [
-  bespokeFeed("crypto-top100", "Crypto Top 25", "Top 25 cryptocurrencies by market cap with price, volume, and 24h change", "60s", 6000, "financial"),
+  // crypto-top100 delisted 2026-06-12 — commodity feed, cut from priced catalog.
+  // Endpoint /feeds/crypto-top100 stays in index.ts for backward compat.
   bespokeFeed("defi-yields", "DeFi Yields", "Top DeFi protocol yields across major chains", "120s", 10000, "financial"),
   // ── BYTE Library publisher feeds (served via the generic discovery-api proxy)
   // Each entry's `publisher` is the on-chain Arbitrum address registered on
@@ -303,8 +304,8 @@ export const feedRegistry: FeedMetadata[] = [
   customPricedFeed("pkg-verdict", "Package Verdict Oracle", "Signed ALLOW/WARN/BLOCK on installing a package@version: OSV.dev malicious-corpus + typosquat distance + registry signals. Verify before you install.", "on-demand", 2500, "general", "50000"),
   // sanctions-screen: decision-priced $0.05 — compliance go/no-go, same tier as address-reputation.
   customPricedFeed("sanctions-screen", "Sanctions Screen Oracle", "Signed, version-pinned OFAC SDN + Consolidated screening on an address or name; every answer embeds the pinned list-state (date + sha256) it was judged against.", "on-demand", 2500, "legal", "50000"),
-  // token-safety: decision-priced $0.05 — completes the safety triad (recipient/package/token).
-  customPricedFeed("token-safety", "Token Safety Oracle", "Signed ALLOW/WARN/BLOCK on a token before an agent receives or swaps it: honeypot / sell-tax / mint-authority / owner-can-change-balance / blacklist signals over GoPlus + on-chain code, ts-v1 frozen ruleset, with a curated known-bad corpus.", "on-demand", 2000, "commerce", "50000"),
+  // token-safety delisted 2026-06-12 — endpoint stays in index.ts for internal
+  // testing; removed from priced catalog until ts-v1 provider contract is finalized.
   // liquidation-stream: per-KB priced on expectedSizeBytes=1620 (~$0.008) — market data.
   bespokeFeed("liquidation-stream", "Liquidation Stream Oracle", "Hawkes branching-ratio (self-excitation) verdict over a first-party realized-liquidation archive: SUBCRITICAL/NEAR_CRITICAL/SUPERCRITICAL.", "on-demand", 1620, "financial"),
   // positioning-snapshot: per-KB priced on expectedSizeBytes=7480 (~$0.037) — market data.

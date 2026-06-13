@@ -117,7 +117,7 @@ function buildAccepts(priceAtomic: string) {
 // request body; broadcast/scheduled feeds are GET. Some publisher-backed
 // oracles offer both (subscribe-then-listen via GET indexer proxy AND
 // synchronous request-response via POST proxy) — see usc-statute.
-const POST_ORACLES = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "token-safety"]);
+const POST_ORACLES = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot"]);
 
 // Bazaar discovery extension per route. Minimal output examples per feed shape
 // — just enough for checkIfBazaarNeeded() in @x402/express to detect the
