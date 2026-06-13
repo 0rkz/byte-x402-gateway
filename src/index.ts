@@ -579,7 +579,14 @@ app.post("/feeds/evidence-pack", async (req, res) => {
       body: JSON.stringify(body),
     });
     const text = await upstream.text();
-    res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    if (upstream.ok) {
+      // Add the gateway X-BYTE-Attestation receipt over the exact bytes — every
+      // paid 200 carries it (the agent card advertises this); evidence-pack's
+      // own embedded verdict attestation rides inside the body untouched.
+      await sendAttestedRaw(res, text);
+    } else {
+      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    }
   } catch (err: any) {
     res.status(502).json({ error: "evidence-pack proxy failed", detail: err.message });
   }
@@ -603,7 +610,15 @@ app.post("/feeds/usc-statute", async (req, res) => {
       body: JSON.stringify(body),
     });
     const text = await upstream.text();
-    res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    if (upstream.ok) {
+      // Add the gateway X-BYTE-Attestation receipt — usc-statute carries no
+      // embedded verdict attestation (it's statute text), so this is its ONLY
+      // provenance receipt; without it a paid 200 had zero attestation despite
+      // the agent card advertising one on every paid response.
+      await sendAttestedRaw(res, text);
+    } else {
+      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    }
   } catch (err: any) {
     res.status(502).json({ error: "usc-statute proxy failed", detail: err.message });
   }
