@@ -187,7 +187,7 @@ export interface FeedMetadata {
    * For feeds backed by the generic discovery-api proxy (i.e. served by a
    * BYTE Library publisher rather than a bespoke upstream fetcher), the
    * publisher's on-chain Arbitrum address. Undefined for bespoke feeds
-   * (crypto-top100, defi-yields, fact-oracle).
+   * (crypto-top100, defi-yields).
    */
   publisher?: `0x${string}`;
 }
@@ -263,7 +263,6 @@ const TIER1_PLACEHOLDER = "0x0000000000000000000000000000000000000000" as const;
 export const feedRegistry: FeedMetadata[] = [
   bespokeFeed("crypto-top100", "Crypto Top 25", "Top 25 cryptocurrencies by market cap with price, volume, and 24h change", "60s", 6000, "financial"),
   bespokeFeed("defi-yields", "DeFi Yields", "Top DeFi protocol yields across major chains", "120s", 10000, "financial"),
-  bespokeFeed("fact-oracle", "Byte Fact Oracle", "Slashable factual question/answer via fact-oracle.payperbyte.io — LLM web research + SelfCheckGPT NLI gate, delivered on-chain. Gateway returns the 202 ACK; the answer is broadcast on-chain to the subscriber.", "on-demand", 150, "general"),
   // ── BYTE Library publisher feeds (served via the generic discovery-api proxy)
   // Each entry's `publisher` is the on-chain Arbitrum address registered on
   // DataRegistry; the gateway proxies the latest BroadcastStreamed payload

@@ -117,7 +117,7 @@ function buildAccepts(priceAtomic: string) {
 // request body; broadcast/scheduled feeds are GET. Some publisher-backed
 // oracles offer both (subscribe-then-listen via GET indexer proxy AND
 // synchronous request-response via POST proxy) — see usc-statute.
-const POST_ORACLES = new Set(["fact-oracle", "evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot"]);
+const POST_ORACLES = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot"]);
 
 // Bazaar discovery extension per route. Minimal output examples per feed shape
 // — just enough for checkIfBazaarNeeded() in @x402/express to detect the
@@ -537,35 +537,6 @@ app.get("/feeds/defi-yields", async (_req, res) => {
 });
 
 /**
- * Byte Fact Oracle — slashable factual Q&A.
- *
- * The gateway accepts an x402 payment, then forwards the question to
- * fact-oracle.payperbyte.io. fact-oracle returns a 202 ack; the actual
- * answer is delivered on-chain via DataStream.streamBroadcast to the
- * subscriber address provided in the request body.
- *
- * Body: { question: string, subscriber_address: 0x..., max_byte_cost?: int }
- *   - subscriber_address: where the on-chain answer is broadcast to
- *   - max_byte_cost: optional cap on payload size (default 2000)
- * 200: { request_id, est_eta_ms, publisher } (relayed from fact-oracle)
- * Non-2xx from fact-oracle is forwarded with its body.
- */
-app.post("/feeds/fact-oracle", async (req, res) => {
-  try {
-    const body = req.body ?? {};
-    const upstream = await fetch(`${config.factOracleUrl}/query`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const text = await upstream.text();
-    res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
-  } catch (err: any) {
-    res.status(502).json({ error: "fact-oracle proxy failed", detail: err.message });
-  }
-});
-
-/**
  * evidence-pack — RAG-citable meta-oracle (LAUNCH_PLAN §13).
  * Body: { claim: string, domains?: string[], max_sources?: int,
  *         subscriber_address?, subscriber_signature?, request_nonce?, deadline_unix? }
@@ -599,7 +570,7 @@ app.post("/feeds/evidence-pack", async (req, res) => {
  * Note: usc-statute is also registered as a publisher-backed indexerFeed
  * (the generic loop below sets up the GET route serving the latest broadcast).
  * This explicit POST proxy is the request-response synchronous path for
- * agents that don't want to subscribe — same dual-pattern as fact-oracle.
+ * agents that don't want to subscribe — dual GET/POST pattern.
  */
 app.post("/feeds/usc-statute", async (req, res) => {
   try {

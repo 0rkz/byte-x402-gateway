@@ -29,34 +29,12 @@ import { config, feedRegistry, networkInfo } from "./config.js";
  * a publisher-backed feed AND a POST oracle, so it gets BOTH a GET (latest
  * broadcast) and a POST (synchronous query) operation below.
  */
-const POST_ORACLE_IDS = new Set(["fact-oracle", "evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot"]);
+const POST_ORACLE_IDS = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot"]);
 
 /** Per-oracle request-body schema, keyed by feed id. Each oracle takes a
  *  different question/claim/citation field plus optional on-chain delivery
  *  binding. Used to emit a correct requestBody for every POST operation. */
 const ORACLE_REQUEST_SCHEMAS: Record<string, object> = {
-  "fact-oracle": {
-    type: "object",
-    properties: {
-      question: {
-        type: "string",
-        minLength: 1,
-        description: "The factual question to answer in plain language, e.g. \"Who won the 2024 Super Bowl?\".",
-      },
-      subscriber_address: {
-        type: "string",
-        pattern: "^0x[0-9a-fA-F]{40}$",
-        description:
-          "The Arbitrum (eip155:421614) address the on-chain answer is broadcast to. Must be subscribed to the fact-oracle publisher and hold USDC escrow to receive the signed answer broadcast.",
-      },
-      max_byte_cost: {
-        type: "integer",
-        minimum: 1,
-        description: "Optional cap on the answer payload size in bytes (default 2000). Caps the per-byte settlement cost of the on-chain answer.",
-      },
-    },
-    required: ["question", "subscriber_address"],
-  },
   "evidence-pack": {
     type: "object",
     properties: {
@@ -284,45 +262,6 @@ const defiYieldsSchema = {
     },
   },
   required: ["feed", "timestamp", "data"],
-};
-
-const factQueryRequestSchema = {
-  type: "object",
-  properties: {
-    question: {
-      type: "string",
-      minLength: 1,
-      description: "The factual question to answer.",
-    },
-    subscriber_address: {
-      type: "string",
-      pattern: "^0x[0-9a-fA-F]{40}$",
-      description:
-        "The Arbitrum address the on-chain answer is broadcast to. Must be " +
-        "subscribed to the fact-oracle publisher and hold USDC escrow.",
-    },
-    max_byte_cost: {
-      type: "integer",
-      description: "Optional cap on answer payload size in bytes (default 2000).",
-    },
-  },
-  required: ["question", "subscriber_address"],
-};
-
-const factQueryResponseSchema = {
-  type: "object",
-  properties: {
-    request_id: { type: "string", description: "Tracking id for this query." },
-    est_eta_ms: {
-      type: "integer",
-      description: "Estimated ms until the on-chain answer broadcast lands.",
-    },
-    publisher: {
-      type: "string",
-      description: "Address of the fact-oracle publisher answering the query.",
-    },
-  },
-  required: ["request_id", "publisher"],
 };
 
 // address-reputation returns its verdict SYNCHRONOUSLY (not the on-chain ack
@@ -691,7 +630,7 @@ function pascal(slug: string): string {
 
 /** Generic signed-verdict response schema for the oracle POST operations. The
  *  gateway returns a request ACK; the answer/verdict is broadcast on-chain to
- *  the subscriber address. Mirrors fact-oracle's ack shape across all oracles. */
+ *  the subscriber address. */
 const oracleAckSchema = {
   type: "object",
   properties: {
@@ -765,7 +704,6 @@ function indexerFeedPaths(): Record<string, unknown> {
 function bespokeOraclePaths(): Record<string, unknown> {
   // IDs declared explicitly in buildOpenApiDoc() with bespoke response schemas.
   const EXPLICIT_IDS = new Set([
-    "fact-oracle",
     "address-reputation",
     "pkg-verdict",
     "sanctions-screen",
@@ -785,7 +723,6 @@ function bespokeOraclePaths(): Record<string, unknown> {
 export function buildOpenApiDoc() {
   const crypto = feed("crypto-top100");
   const defi = feed("defi-yields");
-  const oracle = feed("fact-oracle");
   const addressRep = feed("address-reputation");
   const pkgVerdict = feed("pkg-verdict");
   const sanctionsScreen = feed("sanctions-screen");
@@ -801,8 +738,9 @@ export function buildOpenApiDoc() {
         "Verified, provenance-first data feeds for AI agents. Every payload " +
         "is cryptographically signed and EIP-712 PayloadAttestation " +
         "provenance-stamped — covering crypto markets, DeFi yields, weather, " +
-        "earthquakes, news, code-pulse, threat-intel, and a slashable " +
-        "fact-oracle. Pay per call in USDC over x402 with no API keys — a " +
+        "earthquakes, news, code-pulse, threat-intel, address reputation, " +
+        "sanctions screening, and supply-chain verdicts. " +
+        "Pay per call in USDC over x402 with no API keys — a " +
         "wallet, not a secret on the box. Settlement is on " +
         `${networkInfo().label} (${config.network}). Price is per-feed, derived from expected ` +
         "payload size at " +
@@ -814,10 +752,10 @@ export function buildOpenApiDoc() {
         `${networkInfo().label} (network ${config.network}) and retry. Each feed has its own ` +
         "price (see x-payment-info per operation); the catalog at GET /feeds " +
         "(free, ungated) lists every feed with its computed price and " +
-        "expected payload size. POST /feeds/fact-oracle needs a JSON body: " +
-        "`question` (string) and `subscriber_address` (0x… address " +
-        "subscribed to the fact-oracle with USDC escrow). The answer is " +
-        "broadcast on-chain via DataStream to that address. Free, no " +
+        "expected payload size. POST oracle endpoints (address-reputation, " +
+        "sanctions-screen, pkg-verdict, evidence-pack, usc-statute, " +
+        "liquidation-stream, positioning-snapshot) require a JSON body — " +
+        "see the requestBody schema per operation. Free, no " +
         "payment: GET /feeds and GET /health.",
     },
     servers: [{ url: "https://x402.payperbyte.io" }],
@@ -852,22 +790,6 @@ export function buildOpenApiDoc() {
           parameters: [],
           "x-payment-info": paymentInfo(defi.priceAtomic),
           responses: paidResponses(defiYieldsSchema, defi.priceAtomic),
-        },
-      },
-      "/feeds/fact-oracle": {
-        post: {
-          operationId: "postFactOracle",
-          summary: `Slashable factual Q&A — answer delivered on-chain (${oracle.price} per query ACK)`,
-          tags: ["Feeds"],
-          security: [{ x402Payment: [] }],
-          "x-payment-info": paymentInfo(oracle.priceAtomic),
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": { schema: factQueryRequestSchema },
-            },
-          },
-          responses: paidResponses(factQueryResponseSchema, oracle.priceAtomic),
         },
       },
       "/feeds/address-reputation": {
@@ -982,8 +904,6 @@ export function buildOpenApiDoc() {
       schemas: {
         CryptoTop100Response: cryptoTop100Schema,
         DefiYieldsResponse: defiYieldsSchema,
-        FactQueryRequest: factQueryRequestSchema,
-        FactQueryResponse: factQueryResponseSchema,
         ByteLibraryFeedResponse: byteLibraryFeedSchema,
         OracleAck: oracleAckSchema,
         AddressReputationResponse: addressReputationResponseSchema,
