@@ -105,6 +105,13 @@ export const config = {
    * public surface.
    */
   positioningSnapshotUrl: process.env.POSITIONING_SNAPSHOT_URL || "http://127.0.0.1:8090",
+  /**
+   * token-safety oracle URL — signed honeypot/rug/mint go/no-go on a token
+   * (completes the safety triad with address-reputation + pkg-verdict). Runs on
+   * the same host (byte-token-safety.service, port 8093); NOT exposed via
+   * cloudflared — this paywalled gateway route is its only public surface.
+   */
+  tokenSafetyUrl: process.env.TOKEN_SAFETY_URL || "http://127.0.0.1:8093",
   // (Removed `byteIndexerUrl` 2026-05-25 — was dead code; the actual data
   // path uses DISCOVERY_API_URL read in feeds/generic.ts, defaulting to
   // https://api.payperbyte.io. The historical BYTE_INDEXER_URL env was a
@@ -296,6 +303,8 @@ export const feedRegistry: FeedMetadata[] = [
   customPricedFeed("pkg-verdict", "Package Verdict Oracle", "Signed ALLOW/WARN/BLOCK on installing a package@version: OSV.dev malicious-corpus + typosquat distance + registry signals. Verify before you install.", "on-demand", 2500, "general", "50000"),
   // sanctions-screen: decision-priced $0.05 — compliance go/no-go, same tier as address-reputation.
   customPricedFeed("sanctions-screen", "Sanctions Screen Oracle", "Signed, version-pinned OFAC SDN + Consolidated screening on an address or name; every answer embeds the pinned list-state (date + sha256) it was judged against.", "on-demand", 2500, "legal", "50000"),
+  // token-safety: decision-priced $0.05 — completes the safety triad (recipient/package/token).
+  customPricedFeed("token-safety", "Token Safety Oracle", "Signed ALLOW/WARN/BLOCK on a token before an agent receives or swaps it: honeypot / sell-tax / mint-authority / owner-can-change-balance / blacklist signals over GoPlus + on-chain code, ts-v1 frozen ruleset, with a curated known-bad corpus.", "on-demand", 2000, "commerce", "50000"),
   // liquidation-stream: per-KB priced on expectedSizeBytes=1620 (~$0.008) — market data.
   bespokeFeed("liquidation-stream", "Liquidation Stream Oracle", "Hawkes branching-ratio (self-excitation) verdict over a first-party realized-liquidation archive: SUBCRITICAL/NEAR_CRITICAL/SUPERCRITICAL.", "on-demand", 1620, "financial"),
   // positioning-snapshot: per-KB priced on expectedSizeBytes=7480 (~$0.037) — market data.

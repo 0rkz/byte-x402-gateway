@@ -117,7 +117,7 @@ function buildAccepts(priceAtomic: string) {
 // request body; broadcast/scheduled feeds are GET. Some publisher-backed
 // oracles offer both (subscribe-then-listen via GET indexer proxy AND
 // synchronous request-response via POST proxy) — see usc-statute.
-const POST_ORACLES = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot"]);
+const POST_ORACLES = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "token-safety"]);
 
 // Bazaar discovery extension per route. Minimal output examples per feed shape
 // — just enough for checkIfBazaarNeeded() in @x402/express to detect the
@@ -679,6 +679,32 @@ app.post("/feeds/sanctions-screen", async (req, res) => {
     }
   } catch (err: any) {
     res.status(502).json({ error: "sanctions-screen proxy failed", detail: err.message });
+  }
+});
+
+/**
+ * token-safety — signed honeypot/rug/mint go/no-go on a token (the safety triad).
+ * Body: { token: 0x…, chain?: "base"|"ethereum"|"arbitrum" }
+ * 200: { answer: { verdict: ALLOW|WARN|BLOCK, score, signals, … }, attestation: { … }, broadcast: { … } }
+ *
+ * Forwarded BYTE-FOR-BYTE (sendAttestedRaw).
+ */
+app.post("/feeds/token-safety", async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const upstream = await fetch(`${config.tokenSafetyUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await upstream.text();
+    if (upstream.ok) {
+      await sendAttestedRaw(res, text);
+    } else {
+      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    }
+  } catch (err: any) {
+    res.status(502).json({ error: "token-safety proxy failed", detail: err.message });
   }
 });
 

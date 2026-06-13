@@ -29,7 +29,7 @@ import { config, feedRegistry, networkInfo } from "./config.js";
  * a publisher-backed feed AND a POST oracle, so it gets BOTH a GET (latest
  * broadcast) and a POST (synchronous query) operation below.
  */
-const POST_ORACLE_IDS = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot"]);
+const POST_ORACLE_IDS = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "token-safety"]);
 
 /** Per-oracle request-body schema, keyed by feed id. Each oracle takes a
  *  different question/claim/citation field plus optional on-chain delivery
@@ -171,6 +171,22 @@ const ORACLE_REQUEST_SCHEMAS: Record<string, object> = {
         description: "Subset of the configured asset set to snapshot (default: all configured — BTC, ETH, SOL, ARB, AVAX).",
       },
     },
+  },
+  "token-safety": {
+    type: "object",
+    properties: {
+      token: {
+        type: "string",
+        pattern: "^0x[0-9a-fA-F]{40}$",
+        description: "The token contract address to screen (honeypot/rug/mint/blacklist signals). BLOCK if no contract code is deployed at the address.",
+      },
+      chain: {
+        type: "string",
+        enum: ["base", "ethereum", "arbitrum"],
+        description: "Chain the token lives on (default \"base\"). Selects the GoPlus chain_id + the public RPC for the on-chain code check.",
+      },
+    },
+    required: ["token"],
   },
 };
 
@@ -466,6 +482,62 @@ const sanctionsScreenResponseSchema = {
   required: ["answer"],
 };
 
+// token-safety returns its verdict SYNCHRONOUSLY — { answer, attestation, broadcast }.
+const tokenSafetyResponseSchema = {
+  type: "object",
+  properties: {
+    answer: {
+      type: "object",
+      properties: {
+        v: { const: "token-safety/v1" },
+        ts: { type: "integer", description: "Unix seconds the verdict was produced." },
+        query: {
+          type: "object",
+          properties: {
+            token: { type: "string" },
+            chain: { type: "string" },
+          },
+        },
+        verdict: {
+          type: "string",
+          enum: ["ALLOW", "WARN", "BLOCK"],
+          description: "BLOCK = honeypot / cannot-sell / no contract code / known-bad corpus hit; WARN = rug/control flag (mintable, owner-can-change-balance, pausable, blacklist) or unverified; ALLOW = clean.",
+        },
+        score: { type: "integer", minimum: 0, maximum: 100 },
+        reasons: { type: "array", items: { type: "string" } },
+        signals: {
+          type: "object",
+          description: "goplus (honeypot, buy/sell tax, is_mintable, owner_change_balance, can_take_back_ownership, hidden_owner, blacklist, is_open_source, LP) + onchain (is_contract via eth_getCode) + corpus (known-bad hit). GoPlus is the cited data source; BYTE adds the signed reproducible verdict.",
+        },
+        methodology: { type: "string", description: "Frozen ruleset id, e.g. \"ts-v1\"." },
+        input_hashes: { type: "object" },
+        error: { type: ["string", "null"] },
+      },
+      required: ["v", "verdict", "score", "reasons", "methodology"],
+    },
+    attestation: {
+      type: "object",
+      description:
+        "Publisher's EIP-712 PayloadAttestation over keccak256 of the canonical " +
+        "(insertion-order, minified) answer bytes. Recompute the hash over `answer` " +
+        "AS RECEIVED and recover the signer before acting on the verdict.",
+      properties: {
+        payloadHash: { type: "string" },
+        payloadLength: { type: "integer" },
+        deadline: { type: "integer" },
+        signer: { type: "string" },
+        signature: { type: "string" },
+        domain: { type: "object", description: "EIP-712 domain {name:\"BYTE Library\", version:\"1\", chainId:421614, verifyingContract}." },
+      },
+    },
+    broadcast: {
+      type: "object",
+      description: "On-chain broadcast status — disabled on this rail; the synchronous signed verdict is the product.",
+    },
+  },
+  required: ["answer"],
+};
+
 // liquidation-stream returns its verdict SYNCHRONOUSLY — { answer, attestation, broadcast }.
 // The committed window (window_start_ms/window_end_ms) in the answer makes the verdict
 // reproducible via POST /verify against the append-only archive.
@@ -728,6 +800,7 @@ export function buildOpenApiDoc() {
   const sanctionsScreen = feed("sanctions-screen");
   const liquidationStream = feed("liquidation-stream");
   const positioningSnapshot = feed("positioning-snapshot");
+  const tokenSafety = feed("token-safety");
 
   return {
     openapi: "3.1.0",
@@ -843,6 +916,23 @@ export function buildOpenApiDoc() {
           responses: paidResponses(sanctionsScreenResponseSchema, sanctionsScreen.priceAtomic),
         },
       },
+      "/feeds/token-safety": {
+        post: {
+          operationId: "postTokenSafety",
+          summary: `Token Safety — synchronous signed ALLOW/WARN/BLOCK honeypot/rug verdict (${tokenSafety.price} per verdict)`,
+          description: tokenSafety.description,
+          tags: ["Feeds"],
+          security: [{ x402Payment: [] }],
+          "x-payment-info": paymentInfo(tokenSafety.priceAtomic),
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": { schema: ORACLE_REQUEST_SCHEMAS["token-safety"] },
+            },
+          },
+          responses: paidResponses(tokenSafetyResponseSchema, tokenSafety.priceAtomic),
+        },
+      },
       "/feeds/liquidation-stream": {
         post: {
           operationId: "postLiquidationStream",
@@ -909,6 +999,7 @@ export function buildOpenApiDoc() {
         AddressReputationResponse: addressReputationResponseSchema,
         PkgVerdictResponse: pkgVerdictResponseSchema,
         SanctionsScreenResponse: sanctionsScreenResponseSchema,
+        TokenSafetyResponse: tokenSafetyResponseSchema,
         LiquidationStreamResponse: liquidationStreamResponseSchema,
         PositioningSnapshotResponse: positioningSnapshotResponseSchema,
       },
