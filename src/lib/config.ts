@@ -269,7 +269,7 @@ const TIER1_PLACEHOLDER = "0x0000000000000000000000000000000000000000" as const;
 
 export const feedRegistry: FeedMetadata[] = [
   // crypto-top100 delisted 2026-06-12 — commodity feed, cut from priced catalog.
-  // Endpoint /feeds/crypto-top100 stays in index.ts for backward compat.
+  // crypto-top100 route + fetcher REMOVED 2026-06-14 (CoinGecko no-resale; it served data UNPAID).
   bespokeFeed("defi-yields", "DeFi Yields", "Top DeFi protocol yields across major chains", "120s", 10000, "financial"),
   // ── BYTE Library publisher feeds (served via the generic discovery-api proxy)
   // Each entry's `publisher` is the on-chain Arbitrum address registered on
