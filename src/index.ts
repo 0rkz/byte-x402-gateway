@@ -15,7 +15,6 @@ import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient, type FacilitatorConfig } from "@x402/core/server";
 import { config, feedRegistry, DISCLAIMER_TEXT, networkInfo } from "./lib/config.js";
 import { buildOpenApiDoc } from "./lib/openapi.js";
-import { fetchCryptoTop100 } from "./feeds/crypto.js";
 import { fetchDefiYields } from "./feeds/defi.js";
 import { fetchLatestPublisherPayload } from "./feeds/generic.js";
 import {
@@ -523,19 +522,9 @@ app.get("/health", (_req, res) => {
 // Paid Endpoints
 // ---------------------------------------------------------------------------
 
-/** Top 25 cryptocurrencies by market cap.
- *  NOT attested: the feed was cut from 100 to 25 commodity coins — signing a
- *  cut commodity payload produces a meaningless receipt that dilutes what
- *  X-BYTE-Attestation means on the verdict feeds. Demo with address-reputation,
- *  never this. */
-app.get("/feeds/crypto-top100", async (_req, res) => {
-  try {
-    const data = await fetchCryptoTop100();
-    res.json(data);
-  } catch (err: any) {
-    res.status(502).json({ error: "Failed to fetch crypto data", detail: err.message });
-  }
-});
+// crypto-top100 route REMOVED 2026-06-14 — CoinGecko free-tier no-resale, and it
+// served data UNPAID (delisted from feedRegistry → no payment gate). Feed + fetcher
+// retired. See OUTSTANDING_ACTIONS §5.4.
 
 /** Top DeFi yield pools across major chains. */
 app.get("/feeds/defi-yields", async (_req, res) => {
