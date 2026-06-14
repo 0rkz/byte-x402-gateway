@@ -29,34 +29,12 @@ import { config, feedRegistry, networkInfo } from "./config.js";
  * a publisher-backed feed AND a POST oracle, so it gets BOTH a GET (latest
  * broadcast) and a POST (synchronous query) operation below.
  */
-const POST_ORACLE_IDS = new Set(["fact-oracle", "evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot"]);
+const POST_ORACLE_IDS = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "token-safety"]);
 
 /** Per-oracle request-body schema, keyed by feed id. Each oracle takes a
  *  different question/claim/citation field plus optional on-chain delivery
  *  binding. Used to emit a correct requestBody for every POST operation. */
 const ORACLE_REQUEST_SCHEMAS: Record<string, object> = {
-  "fact-oracle": {
-    type: "object",
-    properties: {
-      question: {
-        type: "string",
-        minLength: 1,
-        description: "The factual question to answer in plain language, e.g. \"Who won the 2024 Super Bowl?\".",
-      },
-      subscriber_address: {
-        type: "string",
-        pattern: "^0x[0-9a-fA-F]{40}$",
-        description:
-          "The Arbitrum (eip155:421614) address the on-chain answer is broadcast to. Must be subscribed to the fact-oracle publisher and hold USDC escrow to receive the signed answer broadcast.",
-      },
-      max_byte_cost: {
-        type: "integer",
-        minimum: 1,
-        description: "Optional cap on the answer payload size in bytes (default 2000). Caps the per-byte settlement cost of the on-chain answer.",
-      },
-    },
-    required: ["question", "subscriber_address"],
-  },
   "evidence-pack": {
     type: "object",
     properties: {
@@ -68,7 +46,7 @@ const ORACLE_REQUEST_SCHEMAS: Record<string, object> = {
       domains: {
         type: "array",
         items: { type: "string" },
-        description: "Optional allowlist of source domains to retrieve evidence from (e.g. [\"sec.gov\", \"circle.com\"]). Omit to search all indexed BYTE Library factual feeds.",
+        description: "Optional allowlist of source domains to retrieve evidence from (e.g. [\"sec.gov\", \"circle.com\"]). Omit to search all indexed PayPerByte factual feeds.",
       },
       max_sources: {
         type: "integer",
@@ -194,6 +172,22 @@ const ORACLE_REQUEST_SCHEMAS: Record<string, object> = {
       },
     },
   },
+  "token-safety": {
+    type: "object",
+    properties: {
+      token: {
+        type: "string",
+        pattern: "^0x[0-9a-fA-F]{40}$",
+        description: "The token contract address to screen (honeypot/rug/mint/blacklist signals). BLOCK if no contract code is deployed at the address.",
+      },
+      chain: {
+        type: "string",
+        enum: ["base", "ethereum", "arbitrum"],
+        description: "Chain the token lives on (default \"base\"). Selects the GoPlus chain_id + the public RPC for the on-chain code check.",
+      },
+    },
+    required: ["token"],
+  },
 };
 
 /** Per-feed x-payment-info block — price varies by expected payload size. */
@@ -284,45 +278,6 @@ const defiYieldsSchema = {
     },
   },
   required: ["feed", "timestamp", "data"],
-};
-
-const factQueryRequestSchema = {
-  type: "object",
-  properties: {
-    question: {
-      type: "string",
-      minLength: 1,
-      description: "The factual question to answer.",
-    },
-    subscriber_address: {
-      type: "string",
-      pattern: "^0x[0-9a-fA-F]{40}$",
-      description:
-        "The Arbitrum address the on-chain answer is broadcast to. Must be " +
-        "subscribed to the fact-oracle publisher and hold USDC escrow.",
-    },
-    max_byte_cost: {
-      type: "integer",
-      description: "Optional cap on answer payload size in bytes (default 2000).",
-    },
-  },
-  required: ["question", "subscriber_address"],
-};
-
-const factQueryResponseSchema = {
-  type: "object",
-  properties: {
-    request_id: { type: "string", description: "Tracking id for this query." },
-    est_eta_ms: {
-      type: "integer",
-      description: "Estimated ms until the on-chain answer broadcast lands.",
-    },
-    publisher: {
-      type: "string",
-      description: "Address of the fact-oracle publisher answering the query.",
-    },
-  },
-  required: ["request_id", "publisher"],
 };
 
 // address-reputation returns its verdict SYNCHRONOUSLY (not the on-chain ack
@@ -527,6 +482,62 @@ const sanctionsScreenResponseSchema = {
   required: ["answer"],
 };
 
+// token-safety returns its verdict SYNCHRONOUSLY — { answer, attestation, broadcast }.
+const tokenSafetyResponseSchema = {
+  type: "object",
+  properties: {
+    answer: {
+      type: "object",
+      properties: {
+        v: { const: "token-safety/v1" },
+        ts: { type: "integer", description: "Unix seconds the verdict was produced." },
+        query: {
+          type: "object",
+          properties: {
+            token: { type: "string" },
+            chain: { type: "string" },
+          },
+        },
+        verdict: {
+          type: "string",
+          enum: ["ALLOW", "WARN", "BLOCK"],
+          description: "BLOCK = honeypot / cannot-sell / no contract code / known-bad corpus hit; WARN = rug/control flag (mintable, owner-can-change-balance, pausable, blacklist) or unverified; ALLOW = clean.",
+        },
+        score: { type: "integer", minimum: 0, maximum: 100 },
+        reasons: { type: "array", items: { type: "string" } },
+        signals: {
+          type: "object",
+          description: "goplus (honeypot, buy/sell tax, is_mintable, owner_change_balance, can_take_back_ownership, hidden_owner, blacklist, is_open_source, LP) + onchain (is_contract via eth_getCode) + corpus (known-bad hit). GoPlus is the cited data source; BYTE adds the signed reproducible verdict.",
+        },
+        methodology: { type: "string", description: "Frozen ruleset id, e.g. \"ts-v1\"." },
+        input_hashes: { type: "object" },
+        error: { type: ["string", "null"] },
+      },
+      required: ["v", "verdict", "score", "reasons", "methodology"],
+    },
+    attestation: {
+      type: "object",
+      description:
+        "Publisher's EIP-712 PayloadAttestation over keccak256 of the canonical " +
+        "(insertion-order, minified) answer bytes. Recompute the hash over `answer` " +
+        "AS RECEIVED and recover the signer before acting on the verdict.",
+      properties: {
+        payloadHash: { type: "string" },
+        payloadLength: { type: "integer" },
+        deadline: { type: "integer" },
+        signer: { type: "string" },
+        signature: { type: "string" },
+        domain: { type: "object", description: "EIP-712 domain {name:\"BYTE Library\", version:\"1\", chainId:421614, verifyingContract}." },
+      },
+    },
+    broadcast: {
+      type: "object",
+      description: "On-chain broadcast status — disabled on this rail; the synchronous signed verdict is the product.",
+    },
+  },
+  required: ["answer"],
+};
+
 // liquidation-stream returns its verdict SYNCHRONOUSLY — { answer, attestation, broadcast }.
 // The committed window (window_start_ms/window_end_ms) in the answer makes the verdict
 // reproducible via POST /verify against the append-only archive.
@@ -691,7 +702,7 @@ function pascal(slug: string): string {
 
 /** Generic signed-verdict response schema for the oracle POST operations. The
  *  gateway returns a request ACK; the answer/verdict is broadcast on-chain to
- *  the subscriber address. Mirrors fact-oracle's ack shape across all oracles. */
+ *  the subscriber address. */
 const oracleAckSchema = {
   type: "object",
   properties: {
@@ -742,7 +753,7 @@ function indexerFeedPaths(): Record<string, unknown> {
     paths[f.endpoint] = {
       get: {
         operationId: `get${pascal(f.id)}`,
-        summary: `${f.name} — latest BYTE Library broadcast (${f.price} / call, ~${f.expectedSizeBytes}B)`,
+        summary: `${f.name} — latest PayPerByte broadcast (${f.price} / call, ~${f.expectedSizeBytes}B)`,
         description: f.description,
         tags: ["Feeds"],
         security: [{ x402Payment: [] }],
@@ -765,7 +776,6 @@ function indexerFeedPaths(): Record<string, unknown> {
 function bespokeOraclePaths(): Record<string, unknown> {
   // IDs declared explicitly in buildOpenApiDoc() with bespoke response schemas.
   const EXPLICIT_IDS = new Set([
-    "fact-oracle",
     "address-reputation",
     "pkg-verdict",
     "sanctions-screen",
@@ -783,9 +793,7 @@ function bespokeOraclePaths(): Record<string, unknown> {
 }
 
 export function buildOpenApiDoc() {
-  const crypto = feed("crypto-top100");
   const defi = feed("defi-yields");
-  const oracle = feed("fact-oracle");
   const addressRep = feed("address-reputation");
   const pkgVerdict = feed("pkg-verdict");
   const sanctionsScreen = feed("sanctions-screen");
@@ -795,14 +803,15 @@ export function buildOpenApiDoc() {
   return {
     openapi: "3.1.0",
     info: {
-      title: "BYTE Library x402 Gateway",
+      title: "PayPerByte x402 Gateway",
       version: "0.3.0",
       description:
         "Verified, provenance-first data feeds for AI agents. Every payload " +
         "is cryptographically signed and EIP-712 PayloadAttestation " +
         "provenance-stamped — covering crypto markets, DeFi yields, weather, " +
-        "earthquakes, news, code-pulse, threat-intel, and a slashable " +
-        "fact-oracle. Pay per call in USDC over x402 with no API keys — a " +
+        "earthquakes, news, code-pulse, threat-intel, address reputation, " +
+        "sanctions screening, and supply-chain verdicts. " +
+        "Pay per call in USDC over x402 with no API keys — a " +
         "wallet, not a secret on the box. Settlement is on " +
         `${networkInfo().label} (${config.network}). Price is per-feed, derived from expected ` +
         "payload size at " +
@@ -814,10 +823,10 @@ export function buildOpenApiDoc() {
         `${networkInfo().label} (network ${config.network}) and retry. Each feed has its own ` +
         "price (see x-payment-info per operation); the catalog at GET /feeds " +
         "(free, ungated) lists every feed with its computed price and " +
-        "expected payload size. POST /feeds/fact-oracle needs a JSON body: " +
-        "`question` (string) and `subscriber_address` (0x… address " +
-        "subscribed to the fact-oracle with USDC escrow). The answer is " +
-        "broadcast on-chain via DataStream to that address. Free, no " +
+        "expected payload size. POST oracle endpoints (address-reputation, " +
+        "sanctions-screen, pkg-verdict, evidence-pack, usc-statute, " +
+        "liquidation-stream, positioning-snapshot) require a JSON body — " +
+        "see the requestBody schema per operation. Free, no " +
         "payment: GET /feeds and GET /health.",
     },
     servers: [{ url: "https://x402.payperbyte.io" }],
@@ -832,17 +841,6 @@ export function buildOpenApiDoc() {
     // still recognize the endpoints as authenticated-by-payment.
     security: [{ x402Payment: [] }],
     paths: {
-      "/feeds/crypto-top100": {
-        get: {
-          operationId: "getCryptoTop100",
-          summary: `Top 25 cryptocurrencies — price, market cap, 24h change (${crypto.price})`,
-          tags: ["Feeds"],
-          security: [{ x402Payment: [] }],
-          parameters: [],
-          "x-payment-info": paymentInfo(crypto.priceAtomic),
-          responses: paidResponses(cryptoTop100Schema, crypto.priceAtomic),
-        },
-      },
       "/feeds/defi-yields": {
         get: {
           operationId: "getDefiYields",
@@ -852,22 +850,6 @@ export function buildOpenApiDoc() {
           parameters: [],
           "x-payment-info": paymentInfo(defi.priceAtomic),
           responses: paidResponses(defiYieldsSchema, defi.priceAtomic),
-        },
-      },
-      "/feeds/fact-oracle": {
-        post: {
-          operationId: "postFactOracle",
-          summary: `Slashable factual Q&A — answer delivered on-chain (${oracle.price} per query ACK)`,
-          tags: ["Feeds"],
-          security: [{ x402Payment: [] }],
-          "x-payment-info": paymentInfo(oracle.priceAtomic),
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": { schema: factQueryRequestSchema },
-            },
-          },
-          responses: paidResponses(factQueryResponseSchema, oracle.priceAtomic),
         },
       },
       "/feeds/address-reputation": {
@@ -982,13 +964,12 @@ export function buildOpenApiDoc() {
       schemas: {
         CryptoTop100Response: cryptoTop100Schema,
         DefiYieldsResponse: defiYieldsSchema,
-        FactQueryRequest: factQueryRequestSchema,
-        FactQueryResponse: factQueryResponseSchema,
         ByteLibraryFeedResponse: byteLibraryFeedSchema,
         OracleAck: oracleAckSchema,
         AddressReputationResponse: addressReputationResponseSchema,
         PkgVerdictResponse: pkgVerdictResponseSchema,
         SanctionsScreenResponse: sanctionsScreenResponseSchema,
+        TokenSafetyResponse: tokenSafetyResponseSchema,
         LiquidationStreamResponse: liquidationStreamResponseSchema,
         PositioningSnapshotResponse: positioningSnapshotResponseSchema,
       },

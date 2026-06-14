@@ -117,7 +117,7 @@ function buildAccepts(priceAtomic: string) {
 // request body; broadcast/scheduled feeds are GET. Some publisher-backed
 // oracles offer both (subscribe-then-listen via GET indexer proxy AND
 // synchronous request-response via POST proxy) — see usc-statute.
-const POST_ORACLES = new Set(["fact-oracle", "evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot"]);
+const POST_ORACLES = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot"]);
 
 // Bazaar discovery extension per route. Minimal output examples per feed shape
 // — just enough for checkIfBazaarNeeded() in @x402/express to detect the
@@ -320,7 +320,7 @@ app.get("/feeds", (_req, res) => {
   if (config.solanaPayTo && ExactSvmScheme) networks.push(config.solanaNetwork);
 
   res.json({
-    protocol: "BYTE Library x402 Gateway",
+    protocol: "PayPerByte x402 Gateway",
     version: "0.3.0",
     networks,
     facilitator: config.facilitatorUrl,
@@ -362,7 +362,7 @@ function buildX402Manifest() {
   const net = networkInfo();
   return {
     x402Version: 1,
-    name: "BYTE Library",
+    name: "PayPerByte",
     description:
       `Per-byte USDC data feeds + oracles for AI agents. First-party, verifiable, no token. Settlement on ${net.label}.`,
     provider: { organization: "BYTEDev Inc.", url: "https://www.payperbyte.io" },
@@ -410,7 +410,7 @@ app.get(["/x402-manifest", "/.well-known/x402"], (_req, res) => {
 app.get("/.well-known/agent.json", (_req, res) => {
   const net = networkInfo();
   res.json({
-    name: "BYTE Library",
+    name: "PayPerByte",
     description:
       `Per-byte USDC data feeds + oracles for AI agents — pay-per-call via x402, settled in USDC on ${net.label}. Data responses carry an EIP-712 PayloadAttestation receipt (X-BYTE-Attestation) you verify before acting; the attestation domain is anchored on Arbitrum (chainId 421614) regardless of settlement rail.`,
     url: "https://x402.payperbyte.io",
@@ -469,9 +469,9 @@ app.get("/.well-known/agent-registration.json", (_req, res) => {
   const agentId = process.env.ERC8004_AGENT_ID;
   res.json({
     type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
-    name: "BYTE Library",
+    name: "PayPerByte",
     description:
-      "Per-byte USDC data feeds and oracles for AI agents (display name: PayPerByte). 22 paid x402 resources served from https://x402.payperbyte.io, settled in USDC on Base mainnet (eip155:8453); flagship POST /feeds/address-reputation at $0.05. Every data response carries an EIP-712 PayloadAttestation receipt (X-BYTE-Attestation header) that callers verify before acting.",
+      `Per-byte USDC data feeds and oracles for AI agents (display name: PayPerByte). ${feedRegistry.length} paid x402 resources served from https://x402.payperbyte.io, settled in USDC on Base mainnet (eip155:8453); flagship POST /feeds/address-reputation at $0.05. Every data response carries an EIP-712 PayloadAttestation receipt (X-BYTE-Attestation header) that callers verify before acting.`,
     image: "https://raw.githubusercontent.com/0rkz/byte-mcp-server/main/assets/logo-400x400.png",
     services: [
       { name: "web", endpoint: "https://x402.payperbyte.io" },
@@ -486,6 +486,17 @@ app.get("/.well-known/agent-registration.json", (_req, res) => {
       ? [{ agentId: Number(agentId), agentRegistry: "eip155:421614:0x8004A818BFB912233c491871b3d84c89A494BD9e" }]
       : [],
   });
+});
+
+/**
+ * 402index.io domain-verification file. 402index fetches this to confirm we own
+ * x402.payperbyte.io (the host all our feeds are indexed under) and flip
+ * domain_verified=1 on our rows. Set INDEX402_VERIFY_HASH to the
+ * verification_hash returned by POST https://402index.io/api/v1/claim. Served
+ * bare (no trailing newline), no redirect, <1KB — per the 402index spec.
+ */
+app.get("/.well-known/402index-verify.txt", (_req, res) => {
+  res.type("text/plain").send(process.env.INDEX402_VERIFY_HASH || "");
 });
 
 /**
@@ -537,35 +548,6 @@ app.get("/feeds/defi-yields", async (_req, res) => {
 });
 
 /**
- * Byte Fact Oracle — slashable factual Q&A.
- *
- * The gateway accepts an x402 payment, then forwards the question to
- * fact-oracle.payperbyte.io. fact-oracle returns a 202 ack; the actual
- * answer is delivered on-chain via DataStream.streamBroadcast to the
- * subscriber address provided in the request body.
- *
- * Body: { question: string, subscriber_address: 0x..., max_byte_cost?: int }
- *   - subscriber_address: where the on-chain answer is broadcast to
- *   - max_byte_cost: optional cap on payload size (default 2000)
- * 200: { request_id, est_eta_ms, publisher } (relayed from fact-oracle)
- * Non-2xx from fact-oracle is forwarded with its body.
- */
-app.post("/feeds/fact-oracle", async (req, res) => {
-  try {
-    const body = req.body ?? {};
-    const upstream = await fetch(`${config.factOracleUrl}/query`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const text = await upstream.text();
-    res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
-  } catch (err: any) {
-    res.status(502).json({ error: "fact-oracle proxy failed", detail: err.message });
-  }
-});
-
-/**
  * evidence-pack — RAG-citable meta-oracle (LAUNCH_PLAN §13).
  * Body: { claim: string, domains?: string[], max_sources?: int,
  *         subscriber_address?, subscriber_signature?, request_nonce?, deadline_unix? }
@@ -579,7 +561,14 @@ app.post("/feeds/evidence-pack", async (req, res) => {
       body: JSON.stringify(body),
     });
     const text = await upstream.text();
-    res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    if (upstream.ok) {
+      // Add the gateway X-BYTE-Attestation receipt over the exact bytes — every
+      // paid 200 carries it (the agent card advertises this); evidence-pack's
+      // own embedded verdict attestation rides inside the body untouched.
+      await sendAttestedRaw(res, text);
+    } else {
+      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    }
   } catch (err: any) {
     res.status(502).json({ error: "evidence-pack proxy failed", detail: err.message });
   }
@@ -592,7 +581,7 @@ app.post("/feeds/evidence-pack", async (req, res) => {
  * Note: usc-statute is also registered as a publisher-backed indexerFeed
  * (the generic loop below sets up the GET route serving the latest broadcast).
  * This explicit POST proxy is the request-response synchronous path for
- * agents that don't want to subscribe — same dual-pattern as fact-oracle.
+ * agents that don't want to subscribe — dual GET/POST pattern.
  */
 app.post("/feeds/usc-statute", async (req, res) => {
   try {
@@ -603,7 +592,15 @@ app.post("/feeds/usc-statute", async (req, res) => {
       body: JSON.stringify(body),
     });
     const text = await upstream.text();
-    res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    if (upstream.ok) {
+      // Add the gateway X-BYTE-Attestation receipt — usc-statute carries no
+      // embedded verdict attestation (it's statute text), so this is its ONLY
+      // provenance receipt; without it a paid 200 had zero attestation despite
+      // the agent card advertising one on every paid response.
+      await sendAttestedRaw(res, text);
+    } else {
+      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    }
   } catch (err: any) {
     res.status(502).json({ error: "usc-statute proxy failed", detail: err.message });
   }
@@ -693,6 +690,32 @@ app.post("/feeds/sanctions-screen", async (req, res) => {
     }
   } catch (err: any) {
     res.status(502).json({ error: "sanctions-screen proxy failed", detail: err.message });
+  }
+});
+
+/**
+ * token-safety — signed honeypot/rug/mint go/no-go on a token (the safety triad).
+ * Body: { token: 0x…, chain?: "base"|"ethereum"|"arbitrum" }
+ * 200: { answer: { verdict: ALLOW|WARN|BLOCK, score, signals, … }, attestation: { … }, broadcast: { … } }
+ *
+ * Forwarded BYTE-FOR-BYTE (sendAttestedRaw).
+ */
+app.post("/feeds/token-safety", async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const upstream = await fetch(`${config.tokenSafetyUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await upstream.text();
+    if (upstream.ok) {
+      await sendAttestedRaw(res, text);
+    } else {
+      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    }
+  } catch (err: any) {
+    res.status(502).json({ error: "token-safety proxy failed", detail: err.message });
   }
 });
 

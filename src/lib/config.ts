@@ -105,6 +105,13 @@ export const config = {
    * public surface.
    */
   positioningSnapshotUrl: process.env.POSITIONING_SNAPSHOT_URL || "http://127.0.0.1:8090",
+  /**
+   * token-safety oracle URL — signed honeypot/rug/mint go/no-go on a token
+   * (completes the safety triad with address-reputation + pkg-verdict). Runs on
+   * the same host (byte-token-safety.service, port 8093); NOT exposed via
+   * cloudflared — this paywalled gateway route is its only public surface.
+   */
+  tokenSafetyUrl: process.env.TOKEN_SAFETY_URL || "http://127.0.0.1:8093",
   // (Removed `byteIndexerUrl` 2026-05-25 — was dead code; the actual data
   // path uses DISCOVERY_API_URL read in feeds/generic.ts, defaulting to
   // https://api.payperbyte.io. The historical BYTE_INDEXER_URL env was a
@@ -187,7 +194,7 @@ export interface FeedMetadata {
    * For feeds backed by the generic discovery-api proxy (i.e. served by a
    * BYTE Library publisher rather than a bespoke upstream fetcher), the
    * publisher's on-chain Arbitrum address. Undefined for bespoke feeds
-   * (crypto-top100, defi-yields, fact-oracle).
+   * (crypto-top100, defi-yields).
    */
   publisher?: `0x${string}`;
 }
@@ -261,9 +268,9 @@ function fmtUsdc(atomic: string): string {
 const TIER1_PLACEHOLDER = "0x0000000000000000000000000000000000000000" as const;
 
 export const feedRegistry: FeedMetadata[] = [
-  bespokeFeed("crypto-top100", "Crypto Top 25", "Top 25 cryptocurrencies by market cap with price, volume, and 24h change", "60s", 6000, "financial"),
+  // crypto-top100 delisted 2026-06-12 — commodity feed, cut from priced catalog.
+  // Endpoint /feeds/crypto-top100 stays in index.ts for backward compat.
   bespokeFeed("defi-yields", "DeFi Yields", "Top DeFi protocol yields across major chains", "120s", 10000, "financial"),
-  bespokeFeed("fact-oracle", "Byte Fact Oracle", "Slashable factual question/answer via fact-oracle.payperbyte.io — LLM web research + SelfCheckGPT NLI gate, delivered on-chain. Gateway returns the 202 ACK; the answer is broadcast on-chain to the subscriber.", "on-demand", 150, "general"),
   // ── BYTE Library publisher feeds (served via the generic discovery-api proxy)
   // Each entry's `publisher` is the on-chain Arbitrum address registered on
   // DataRegistry; the gateway proxies the latest BroadcastStreamed payload
@@ -289,7 +296,7 @@ export const feedRegistry: FeedMetadata[] = [
   // evidence-pack is value/compute-priced (higher-margin RAG meta-oracle per
   // §13), NOT per-KB. Raised to $0.10 (2026-06-12) — its buyers aren't the
   // signed-vs-free skeptics, so the premium signals the LLM+retrieval cost.
-  customPricedFeed("evidence-pack", "Evidence Pack Oracle", "RAG-citable meta-oracle: retrieve from BYTE Library factual feeds + LLM grounding + signed verdict with sources. Higher-margin product per LAUNCH_PLAN §13.", "on-demand", 4000, "general", "100000"),
+  customPricedFeed("evidence-pack", "Evidence Pack Oracle", "RAG-citable meta-oracle: retrieve from PayPerByte factual feeds + LLM grounding + signed verdict with sources. Higher-margin product per LAUNCH_PLAN §13.", "on-demand", 4000, "general", "100000"),
   // address-reputation is decision-priced, not size-priced (a wrong ALLOW on a
   // drainer address = irreversible USDC loss) — same $0.05 tier as evidence-pack.
   customPricedFeed("address-reputation", "Address Reputation Oracle", "Agentic-payments go/no-go verdict: synchronous signed ALLOW/WARN/BLOCK for (domain, receiving address, amount, chain) BEFORE releasing USDC. ar-v1 ruleset over RDAP/TLS/DNS/Wayback domain signals + on-chain receiving-address signals + curated known-bad blocklist. The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting.", "on-demand", 2500, "commerce", "50000"),
@@ -297,6 +304,8 @@ export const feedRegistry: FeedMetadata[] = [
   customPricedFeed("pkg-verdict", "Package Verdict Oracle", "Signed ALLOW/WARN/BLOCK on installing a package@version: OSV.dev malicious-corpus + typosquat distance + registry signals. Verify before you install.", "on-demand", 2500, "general", "50000"),
   // sanctions-screen: decision-priced $0.05 — compliance go/no-go, same tier as address-reputation.
   customPricedFeed("sanctions-screen", "Sanctions Screen Oracle", "Signed, version-pinned OFAC SDN + Consolidated screening on an address or name; every answer embeds the pinned list-state (date + sha256) it was judged against.", "on-demand", 2500, "legal", "50000"),
+  // token-safety delisted 2026-06-12 — endpoint stays in index.ts for internal
+  // testing; removed from priced catalog until ts-v1 provider contract is finalized.
   // liquidation-stream: per-KB priced on expectedSizeBytes=1620 (~$0.008) — market data.
   bespokeFeed("liquidation-stream", "Liquidation Stream Oracle", "Hawkes branching-ratio (self-excitation) verdict over a first-party realized-liquidation archive: SUBCRITICAL/NEAR_CRITICAL/SUPERCRITICAL.", "on-demand", 1620, "financial"),
   // positioning-snapshot: per-KB priced on expectedSizeBytes=7480 (~$0.037) — market data.
