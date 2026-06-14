@@ -320,7 +320,7 @@ app.get("/feeds", (_req, res) => {
   if (config.solanaPayTo && ExactSvmScheme) networks.push(config.solanaNetwork);
 
   res.json({
-    protocol: "BYTE Library x402 Gateway",
+    protocol: "PayPerByte x402 Gateway",
     version: "0.3.0",
     networks,
     facilitator: config.facilitatorUrl,
@@ -362,7 +362,7 @@ function buildX402Manifest() {
   const net = networkInfo();
   return {
     x402Version: 1,
-    name: "BYTE Library",
+    name: "PayPerByte",
     description:
       `Per-byte USDC data feeds + oracles for AI agents. First-party, verifiable, no token. Settlement on ${net.label}.`,
     provider: { organization: "BYTEDev Inc.", url: "https://www.payperbyte.io" },
@@ -410,7 +410,7 @@ app.get(["/x402-manifest", "/.well-known/x402"], (_req, res) => {
 app.get("/.well-known/agent.json", (_req, res) => {
   const net = networkInfo();
   res.json({
-    name: "BYTE Library",
+    name: "PayPerByte",
     description:
       `Per-byte USDC data feeds + oracles for AI agents — pay-per-call via x402, settled in USDC on ${net.label}. Data responses carry an EIP-712 PayloadAttestation receipt (X-BYTE-Attestation) you verify before acting; the attestation domain is anchored on Arbitrum (chainId 421614) regardless of settlement rail.`,
     url: "https://x402.payperbyte.io",
@@ -469,9 +469,9 @@ app.get("/.well-known/agent-registration.json", (_req, res) => {
   const agentId = process.env.ERC8004_AGENT_ID;
   res.json({
     type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
-    name: "BYTE Library",
+    name: "PayPerByte",
     description:
-      "Per-byte USDC data feeds and oracles for AI agents (display name: PayPerByte). 22 paid x402 resources served from https://x402.payperbyte.io, settled in USDC on Base mainnet (eip155:8453); flagship POST /feeds/address-reputation at $0.05. Every data response carries an EIP-712 PayloadAttestation receipt (X-BYTE-Attestation header) that callers verify before acting.",
+      `Per-byte USDC data feeds and oracles for AI agents (display name: PayPerByte). ${feedRegistry.length} paid x402 resources served from https://x402.payperbyte.io, settled in USDC on Base mainnet (eip155:8453); flagship POST /feeds/address-reputation at $0.05. Every data response carries an EIP-712 PayloadAttestation receipt (X-BYTE-Attestation header) that callers verify before acting.`,
     image: "https://raw.githubusercontent.com/0rkz/byte-mcp-server/main/assets/logo-400x400.png",
     services: [
       { name: "web", endpoint: "https://x402.payperbyte.io" },
@@ -486,6 +486,17 @@ app.get("/.well-known/agent-registration.json", (_req, res) => {
       ? [{ agentId: Number(agentId), agentRegistry: "eip155:421614:0x8004A818BFB912233c491871b3d84c89A494BD9e" }]
       : [],
   });
+});
+
+/**
+ * 402index.io domain-verification file. 402index fetches this to confirm we own
+ * x402.payperbyte.io (the host all our feeds are indexed under) and flip
+ * domain_verified=1 on our rows. Set INDEX402_VERIFY_HASH to the
+ * verification_hash returned by POST https://402index.io/api/v1/claim. Served
+ * bare (no trailing newline), no redirect, <1KB — per the 402index spec.
+ */
+app.get("/.well-known/402index-verify.txt", (_req, res) => {
+  res.type("text/plain").send(process.env.INDEX402_VERIFY_HASH || "");
 });
 
 /**

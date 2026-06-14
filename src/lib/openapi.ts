@@ -46,7 +46,7 @@ const ORACLE_REQUEST_SCHEMAS: Record<string, object> = {
       domains: {
         type: "array",
         items: { type: "string" },
-        description: "Optional allowlist of source domains to retrieve evidence from (e.g. [\"sec.gov\", \"circle.com\"]). Omit to search all indexed BYTE Library factual feeds.",
+        description: "Optional allowlist of source domains to retrieve evidence from (e.g. [\"sec.gov\", \"circle.com\"]). Omit to search all indexed PayPerByte factual feeds.",
       },
       max_sources: {
         type: "integer",
@@ -753,7 +753,7 @@ function indexerFeedPaths(): Record<string, unknown> {
     paths[f.endpoint] = {
       get: {
         operationId: `get${pascal(f.id)}`,
-        summary: `${f.name} — latest BYTE Library broadcast (${f.price} / call, ~${f.expectedSizeBytes}B)`,
+        summary: `${f.name} — latest PayPerByte broadcast (${f.price} / call, ~${f.expectedSizeBytes}B)`,
         description: f.description,
         tags: ["Feeds"],
         security: [{ x402Payment: [] }],
@@ -793,19 +793,17 @@ function bespokeOraclePaths(): Record<string, unknown> {
 }
 
 export function buildOpenApiDoc() {
-  const crypto = feed("crypto-top100");
   const defi = feed("defi-yields");
   const addressRep = feed("address-reputation");
   const pkgVerdict = feed("pkg-verdict");
   const sanctionsScreen = feed("sanctions-screen");
   const liquidationStream = feed("liquidation-stream");
   const positioningSnapshot = feed("positioning-snapshot");
-  const tokenSafety = feed("token-safety");
 
   return {
     openapi: "3.1.0",
     info: {
-      title: "BYTE Library x402 Gateway",
+      title: "PayPerByte x402 Gateway",
       version: "0.3.0",
       description:
         "Verified, provenance-first data feeds for AI agents. Every payload " +
@@ -843,17 +841,6 @@ export function buildOpenApiDoc() {
     // still recognize the endpoints as authenticated-by-payment.
     security: [{ x402Payment: [] }],
     paths: {
-      "/feeds/crypto-top100": {
-        get: {
-          operationId: "getCryptoTop100",
-          summary: `Top 25 cryptocurrencies — price, market cap, 24h change (${crypto.price})`,
-          tags: ["Feeds"],
-          security: [{ x402Payment: [] }],
-          parameters: [],
-          "x-payment-info": paymentInfo(crypto.priceAtomic),
-          responses: paidResponses(cryptoTop100Schema, crypto.priceAtomic),
-        },
-      },
       "/feeds/defi-yields": {
         get: {
           operationId: "getDefiYields",
@@ -914,23 +901,6 @@ export function buildOpenApiDoc() {
             },
           },
           responses: paidResponses(sanctionsScreenResponseSchema, sanctionsScreen.priceAtomic),
-        },
-      },
-      "/feeds/token-safety": {
-        post: {
-          operationId: "postTokenSafety",
-          summary: `Token Safety — synchronous signed ALLOW/WARN/BLOCK honeypot/rug verdict (${tokenSafety.price} per verdict)`,
-          description: tokenSafety.description,
-          tags: ["Feeds"],
-          security: [{ x402Payment: [] }],
-          "x-payment-info": paymentInfo(tokenSafety.priceAtomic),
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": { schema: ORACLE_REQUEST_SCHEMAS["token-safety"] },
-            },
-          },
-          responses: paidResponses(tokenSafetyResponseSchema, tokenSafety.priceAtomic),
         },
       },
       "/feeds/liquidation-stream": {

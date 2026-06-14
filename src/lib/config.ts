@@ -296,7 +296,7 @@ export const feedRegistry: FeedMetadata[] = [
   // evidence-pack is value/compute-priced (higher-margin RAG meta-oracle per
   // §13), NOT per-KB. Raised to $0.10 (2026-06-12) — its buyers aren't the
   // signed-vs-free skeptics, so the premium signals the LLM+retrieval cost.
-  customPricedFeed("evidence-pack", "Evidence Pack Oracle", "RAG-citable meta-oracle: retrieve from BYTE Library factual feeds + LLM grounding + signed verdict with sources. Higher-margin product per LAUNCH_PLAN §13.", "on-demand", 4000, "general", "100000"),
+  customPricedFeed("evidence-pack", "Evidence Pack Oracle", "RAG-citable meta-oracle: retrieve from PayPerByte factual feeds + LLM grounding + signed verdict with sources. Higher-margin product per LAUNCH_PLAN §13.", "on-demand", 4000, "general", "100000"),
   // address-reputation is decision-priced, not size-priced (a wrong ALLOW on a
   // drainer address = irreversible USDC loss) — same $0.05 tier as evidence-pack.
   customPricedFeed("address-reputation", "Address Reputation Oracle", "Agentic-payments go/no-go verdict: synchronous signed ALLOW/WARN/BLOCK for (domain, receiving address, amount, chain) BEFORE releasing USDC. ar-v1 ruleset over RDAP/TLS/DNS/Wayback domain signals + on-chain receiving-address signals + curated known-bad blocklist. The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting.", "on-demand", 2500, "commerce", "50000"),
