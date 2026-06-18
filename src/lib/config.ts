@@ -267,6 +267,39 @@ function fmtUsdc(atomic: string): string {
 // behavior — better than serving a wrong publisher's broadcasts).
 const TIER1_PLACEHOLDER = "0x0000000000000000000000000000000000000000" as const;
 
+/**
+ * Value-based per-call price overrides (2026-06-17), keyed by feed id, in atomic
+ * USDC (6 decimals). Replaces the per-byte-of-size formula for these feeds: a feed
+ * is priced by what its data is worth, not how many bytes it returns. Feeds not
+ * listed fall back to the per-KB formula; the decision oracles
+ * (evidence-pack/address-reputation/pkg-verdict/sanctions-screen) keep their own
+ * explicit price via customPricedFeed.
+ */
+const PRICE_OVERRIDES: Record<string, string> = {
+  // verdicts / high-value
+  "usc-statute": "50000",          // $0.05 — legal verdict
+  "threat-intel": "30000",         // $0.03 — security digest
+  // markets / financial data
+  "perp-funding": "20000",         // $0.02
+  "liquidation-stream": "20000",   // $0.02
+  "defi-yields": "20000",          // $0.02
+  "positioning-snapshot": "20000", // $0.02
+  "stablecoin-rails": "15000",     // $0.015
+  "x402-pulse": "10000",           // $0.01
+  "code-pulse": "10000",           // $0.01
+  "runtime-eol": "10000",          // $0.01
+  // commodity / breadth
+  "weather": "5000",               // $0.005
+  "news-feed": "5000",             // $0.005
+  "earthquakes": "2000",           // $0.002
+  "space-weather": "2000",         // $0.002
+  // agent-infrastructure index — value-priced research feeds (compile + scrape + score),
+  // not size-priced; $0.05/snapshot, the decision-oracle tier.
+  "agent-compute": "50000",        // $0.05
+  "agent-memory": "50000",         // $0.05
+  "agent-tools": "50000",          // $0.05
+};
+
 export const feedRegistry: FeedMetadata[] = [
   // crypto-top100 delisted 2026-06-12 — commodity feed, cut from priced catalog.
   // crypto-top100 route + fetcher REMOVED 2026-06-14 (CoinGecko no-resale; it served data UNPAID).
@@ -304,12 +337,23 @@ export const feedRegistry: FeedMetadata[] = [
   customPricedFeed("pkg-verdict", "Package Verdict Oracle", "Signed ALLOW/WARN/BLOCK on installing a package@version: OSV.dev malicious-corpus + typosquat distance + registry signals. Verify before you install.", "on-demand", 2500, "general", "50000"),
   // sanctions-screen: decision-priced $0.05 — compliance go/no-go, same tier as address-reputation.
   customPricedFeed("sanctions-screen", "Sanctions Screen Oracle", "Signed, version-pinned OFAC SDN + Consolidated screening on an address or name; every answer embeds the pinned list-state (date + sha256) it was judged against.", "on-demand", 2500, "legal", "50000"),
-  // token-safety delisted 2026-06-12 — endpoint stays in index.ts for internal
-  // testing; removed from priced catalog until ts-v1 provider contract is finalized.
+  // token-safety delisted 2026-06-12 — NOT in this registry (so it has no payment
+  // gate). Its route in index.ts is a 410-Gone stub (fails closed, serves no data)
+  // until the ts-v1 provider contract is finalized and it is re-added here WITH a gate.
   // liquidation-stream: per-KB priced on expectedSizeBytes=1620 (~$0.008) — market data.
   bespokeFeed("liquidation-stream", "Liquidation Stream Oracle", "Hawkes branching-ratio (self-excitation) verdict over a first-party realized-liquidation archive: SUBCRITICAL/NEAR_CRITICAL/SUPERCRITICAL.", "on-demand", 1620, "financial"),
   // positioning-snapshot: per-KB priced on expectedSizeBytes=7480 (~$0.037) — market data.
   bespokeFeed("positioning-snapshot", "Positioning Snapshot Oracle", "Cross-venue perp positioning (funding + open interest) from Hyperliquid, dYdX v4, Aevo; raw fields, abstains honestly where a venue lacks data.", "on-demand", 7480, "financial"),
+  // ── Agent-Infrastructure Index (SHIPY 2026-06-17): first-party, byte-scored,
+  // compounding daily snapshots of the decentralized agent-runtime stack. Each metric
+  // carries provenance; provider counts are concurrent-active (cumulative flagged).
+  // Publisher = TIER1_PLACEHOLDER until register_oracles.py is run for this cohort.
+  // Token price is on-chain via Pyth (CoinGecko removed catalog-wide 2026-06-18).
+  // SHIP-GATE before PAID launch: license Render Foundation data (or use on-chain RNDR
+  // burn) + clear Subscan terms for Autonomys. See the spec licensing + ship-gates.
+  indexerFeed("agent-compute", "Agent Compute Index", "Decentralized GPU/compute networks an agent can rent (Akash, Render, io.net, Golem, Bittensor, Nosana, Aethir, Hyperbolic): concurrent-active provider counts where independently pollable (cumulative counts flagged), computed GPU utilization, per-metric provenance + data-quality flags, and a byte_score. First-party compounding snapshot, not a relayed dashboard.", "daily", 14000, TIER1_PLACEHOLDER, "financial"),
+  indexerFeed("agent-memory", "Agent Memory Index", "Decentralized storage/memory networks for agent state + RAG (Filecoin, Walrus, Arweave, Storj, Autonomys, Sia, Irys, 0G): active-node accounting and used-vs-capacity where source APIs respond, geo-concentration, agent-memory tooling status, per-metric provenance + data-quality flags, and a byte_score.", "daily", 13000, TIER1_PLACEHOLDER, "financial"),
+  indexerFeed("agent-tools", "Agent Tools Index", "Decentralized networks exposing an agent-callable tool surface — MCP servers, on-chain request buses, OpenAI-compatible inference (Chainlink, Akash, Morpheus, Olas, Virtuals, Bittensor, GaiaNet, Nillion). Tiered: every entry carries a decentralization-maturity flag + verified-vs-claimed split.", "daily", 17000, TIER1_PLACEHOLDER, "financial"),
 ];
 
 /** Build a bespoke (upstream-API-backed) feed entry. */
@@ -321,7 +365,7 @@ function bespokeFeed(
   expectedSizeBytes: number,
   disclaimerCategory: DisclaimerCategory,
 ): FeedMetadata {
-  const priceAtomic = computePriceAtomic(expectedSizeBytes);
+  const priceAtomic = PRICE_OVERRIDES[id] ?? computePriceAtomic(expectedSizeBytes);
   return {
     id, name, description, updateFrequency,
     provenance: "first-party",
@@ -343,7 +387,7 @@ function indexerFeed(
   publisher: `0x${string}`,
   disclaimerCategory: DisclaimerCategory,
 ): FeedMetadata {
-  const priceAtomic = computePriceAtomic(expectedSizeBytes);
+  const priceAtomic = PRICE_OVERRIDES[id] ?? computePriceAtomic(expectedSizeBytes);
   return {
     id, name, description, updateFrequency,
     provenance: "eip712-attested",
