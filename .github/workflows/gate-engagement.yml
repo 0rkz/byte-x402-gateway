@@ -1,0 +1,29 @@
+# Pre-ship gate-engagement check — the deploy-blocking guard against the
+# crypto-top100-class leak (a payment gate that isn't actually engaged serves
+# data free). Runs the probe (scripts/gate-engagement-check.mjs) which spins the
+# gateway up against an UNREACHABLE facilitator and asserts every paid route
+# fails closed (503, never 200-with-data) and every delisted route is gone.
+# Fully hermetic — no network, no facilitator, no real USDC.
+name: gate-engagement
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  gate-engagement:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install
+        run: npm ci || npm install
+      - name: Build
+        run: npm run build
+      - name: Pre-ship gate-engagement check
+        run: node scripts/gate-engagement-check.mjs

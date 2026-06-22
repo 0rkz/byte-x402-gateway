@@ -7,7 +7,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "gate-check": "node scripts/gate-engagement-check.mjs",
+    "preship": "npm run build && node scripts/gate-engagement-check.mjs"
   },
   "dependencies": {
     "@coinbase/x402": "^2.1.0",

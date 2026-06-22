@@ -112,6 +112,14 @@ export const config = {
    * cloudflared — this paywalled gateway route is its only public surface.
    */
   tokenSafetyUrl: process.env.TOKEN_SAFETY_URL || "http://127.0.0.1:8093",
+  /**
+   * reasoning-verdict oracle URL — local-LLM verify-before-act risk verdict
+   * (GPU-backed). Runs on the same host (byte-reasoning-verdict.service, port
+   * 8094, Ollama on 11434); NOT exposed via cloudflared — this paywalled gateway
+   * route is its only public surface. The verdict is advisory; the embedded
+   * EIP-712 receipt proves provenance/integrity, not correctness.
+   */
+  reasoningVerdictUrl: process.env.REASONING_VERDICT_URL || "http://127.0.0.1:8094",
   // (Removed `byteIndexerUrl` 2026-05-25 — was dead code; the actual data
   // path uses DISCOVERY_API_URL read in feeds/generic.ts, defaulting to
   // https://api.payperbyte.io. The historical BYTE_INDEXER_URL env was a
@@ -337,6 +345,11 @@ export const feedRegistry: FeedMetadata[] = [
   customPricedFeed("pkg-verdict", "Package Verdict Oracle", "Signed ALLOW/WARN/BLOCK on installing a package@version: OSV.dev malicious-corpus + typosquat distance + registry signals. Verify before you install.", "on-demand", 2500, "general", "50000"),
   // sanctions-screen: decision-priced $0.05 — compliance go/no-go, same tier as address-reputation.
   customPricedFeed("sanctions-screen", "Sanctions Screen Oracle", "Signed, version-pinned OFAC SDN + Consolidated screening on an address or name; every answer embeds the pinned list-state (date + sha256) it was judged against.", "on-demand", 2500, "legal", "50000"),
+  // reasoning-verdict: GPU-backed local-LLM verify-before-act oracle. Compute-priced
+  // $0.05 (decision-oracle tier) — an agent about to act on a message/payload/proposal
+  // gets a signed ALLOW/WARN/BLOCK/ABSTAIN + reasons it verifies before acting. The
+  // verdict is ADVISORY; the embedded EIP-712 receipt proves provenance, not correctness.
+  customPricedFeed("reasoning-verdict", "Reasoning Verdict Oracle (local LLM)", "Verify-before-act risk oracle: POST an action context (message, payload, proposal, payee, tool-call) and get a signed ALLOW/WARN/BLOCK/ABSTAIN verdict + 0-100 safe-to-proceed score + reasons from a LOCAL model (no data egress). The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting. Advisory: the receipt proves provenance/integrity, not correctness.", "on-demand", 2200, "general", "50000"),
   // token-safety delisted 2026-06-12 — NOT in this registry (so it has no payment
   // gate). Its route in index.ts is a 410-Gone stub (fails closed, serves no data)
   // until the ts-v1 provider contract is finalized and it is re-added here WITH a gate.

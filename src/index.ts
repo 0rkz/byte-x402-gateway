@@ -116,7 +116,7 @@ function buildAccepts(priceAtomic: string) {
 // request body; broadcast/scheduled feeds are GET. Some publisher-backed
 // oracles offer both (subscribe-then-listen via GET indexer proxy AND
 // synchronous request-response via POST proxy) — see usc-statute.
-const POST_ORACLES = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot"]);
+const POST_ORACLES = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "reasoning-verdict"]);
 
 // Bazaar discovery extension per route. Minimal output examples per feed shape
 // — just enough for checkIfBazaarNeeded() in @x402/express to detect the
@@ -185,9 +185,33 @@ for (const feed of feedRegistry) {
 // here once the real middleware is ready.
 let activePaymentMiddleware: ((req: any, res: any, next: any) => void) | null = null;
 
-/** True iff this exact method+path is one of the payment-gated routes. */
+/**
+ * Normalize a request path the SAME way the real x402 matcher does
+ * (@x402/core normalizePath + case-insensitive route regex). Express runs with
+ * loose routing (no strict/case-sensitive routing set), so `/feeds/defi-yields/`,
+ * `/Feeds/defi-yields`, `/FEEDS/DEFI-YIELDS` and `%2F`-encoded forms all route to
+ * the canonical paid handler. Without this normalization the fail-closed stub's
+ * raw exact lookup misses those variants → the handler serves data FREE during
+ * the facilitator-down window. Decode %2F, collapse duplicate slashes, strip the
+ * trailing slash, lowercase.
+ */
+function normalizeGatePath(p: string): string {
+  let s = p;
+  try {
+    s = decodeURIComponent(s);
+  } catch {
+    /* keep raw on a malformed escape */
+  }
+  s = s.replace(/\/{2,}/g, "/");
+  if (s.length > 1) s = s.replace(/\/+$/, "");
+  return s.toLowerCase();
+}
+
+/** True iff this method+path (normalized) is one of the payment-gated routes. */
 function isPaidRoute(req: any): boolean {
-  return Boolean(paymentRoutes[`${req.method} ${req.path}`]);
+  return Boolean(
+    paymentRoutes[`${String(req.method).toUpperCase()} ${normalizeGatePath(req.path)}`],
+  );
 }
 
 /**
@@ -304,7 +328,9 @@ for (const feed of feedRegistry) {
   disclaimerByPath.set(feed.endpoint, feed.disclaimerCategory);
 }
 app.use((req, res, next) => {
-  const cat = disclaimerByPath.get(req.path);
+  // Normalize the same way isPaidRoute does, so path variants still get the
+  // correct legal-framing header (and don't silently drop it).
+  const cat = disclaimerByPath.get(normalizeGatePath(req.path));
   if (cat) res.setHeader("X-BYTE-Disclaimer-Category", cat);
   next();
 });
@@ -683,16 +709,20 @@ app.post("/feeds/sanctions-screen", async (req, res) => {
 });
 
 /**
- * token-safety — signed honeypot/rug/mint go/no-go on a token (the safety triad).
- * Body: { token: 0x…, chain?: "base"|"ethereum"|"arbitrum" }
- * 200: { answer: { verdict: ALLOW|WARN|BLOCK, score, signals, … }, attestation: { … }, broadcast: { … } }
+ * reasoning-verdict — GPU-backed local-LLM verify-before-act oracle.
+ * Body: { subject: string, kind?: string, context?: string|object }
+ * 200: { answer: { verdict: ALLOW|WARN|BLOCK|ABSTAIN, score, summary, reasons[], … },
+ *        attestation: { … }, broadcast: { … } }
  *
- * Forwarded BYTE-FOR-BYTE (sendAttestedRaw).
+ * Forwarded BYTE-FOR-BYTE (sendAttestedRaw): the verdict's embedded EIP-712
+ * PayloadAttestation signs the canonical answer bytes; a JSON round-trip would
+ * corrupt the insertion-order canonical form. The upstream FAILS CLOSED (502)
+ * on an unusable model output, so a bogus/blank verdict is never served.
  */
-app.post("/feeds/token-safety", async (req, res) => {
+app.post("/feeds/reasoning-verdict", async (req, res) => {
   try {
     const body = req.body ?? {};
-    const upstream = await fetch(`${config.tokenSafetyUrl}/query`, {
+    const upstream = await fetch(`${config.reasoningVerdictUrl}/query`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -704,8 +734,30 @@ app.post("/feeds/token-safety", async (req, res) => {
       res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
     }
   } catch (err: any) {
-    res.status(502).json({ error: "token-safety proxy failed", detail: err.message });
+    res.status(502).json({ error: "reasoning-verdict proxy failed", detail: err.message });
   }
+});
+
+/**
+ * token-safety — DELISTED 2026-06-12 (honeypot/rug/mint go/no-go). Its provider
+ * licensing contract (ts-v1) is not finalized, so it is NOT in feedRegistry and
+ * NOT in the priced catalog. It is kept as an explicit 410-Gone stub (NOT a live
+ * proxy) so the route FAILS CLOSED: it never reaches the upstream and never
+ * serves data — closing the dangling-route leak class (a handler outside the
+ * payment gate would serve paid data free the moment its upstream came up).
+ *
+ * Re-list = restore the proxy body AND add a feedRegistry entry so the payment
+ * gate covers it (and re-add it to POST_ORACLES + openapi POST_ORACLE_IDS).
+ * Until then the pre-ship gate-engagement check
+ * (scripts/gate-engagement-check.mjs) asserts this route stays 404/410.
+ */
+app.post("/feeds/token-safety", (_req, res) => {
+  res.status(410).json({
+    error: "delisted",
+    detail:
+      "token-safety is delisted pending its provider licensing contract — it is not " +
+      "currently served. It will return until re-listed with a payment gate.",
+  });
 });
 
 /**

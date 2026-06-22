@@ -29,7 +29,11 @@ import { config, feedRegistry, networkInfo } from "./config.js";
  * a publisher-backed feed AND a POST oracle, so it gets BOTH a GET (latest
  * broadcast) and a POST (synchronous query) operation below.
  */
-const POST_ORACLE_IDS = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "token-safety"]);
+// token-safety removed 2026-06-15: delisted, not in feedRegistry, so it never
+// appeared in the doc anyway — dropped here to stay in sync with POST_ORACLES
+// (index.ts) and avoid advertising a delisted resource if it is ever re-added
+// to the registry before its gate.
+const POST_ORACLE_IDS = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "reasoning-verdict"]);
 
 /** Per-oracle request-body schema, keyed by feed id. Each oracle takes a
  *  different question/claim/citation field plus optional on-chain delivery
