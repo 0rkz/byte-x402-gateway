@@ -116,7 +116,7 @@ function buildAccepts(priceAtomic: string) {
 // request body; broadcast/scheduled feeds are GET. Some publisher-backed
 // oracles offer both (subscribe-then-listen via GET indexer proxy AND
 // synchronous request-response via POST proxy) — see usc-statute.
-const POST_ORACLES = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "reasoning-verdict"]);
+const POST_ORACLES = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "reasoning-verdict", "runtime-eol"]);
 
 // Bazaar discovery extension per route. Minimal output examples per feed shape
 // — just enough for checkIfBazaarNeeded() in @x402/express to detect the
@@ -735,6 +735,36 @@ app.post("/feeds/reasoning-verdict", async (req, res) => {
     }
   } catch (err: any) {
     res.status(502).json({ error: "reasoning-verdict proxy failed", detail: err.message });
+  }
+});
+
+/**
+ * runtime-eol (POST gate) — deterministic signed end-of-life verdict.
+ * Body: { product: string, version: string }   (e.g. { product: "nodejs", version: "18" })
+ * 200: { answer: { status, verdict: ALLOW|WARN|BLOCK|ABSTAIN, eol, days_until_eol, … },
+ *        attestation: { … }, broadcast: { … } }
+ *
+ * Dual feed: GET /feeds/runtime-eol serves the publisher EOL broadcast; this POST
+ * is the decision tier (a per-version "supported as of T" compliance receipt).
+ * Forwarded BYTE-FOR-BYTE (sendAttestedRaw); the gate FAILS CLOSED (502) when
+ * endoflife.date is unreachable.
+ */
+app.post("/feeds/runtime-eol", async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const upstream = await fetch(`${config.runtimeEolGateUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await upstream.text();
+    if (upstream.ok) {
+      await sendAttestedRaw(res, text);
+    } else {
+      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    }
+  } catch (err: any) {
+    res.status(502).json({ error: "runtime-eol gate proxy failed", detail: err.message });
   }
 });
 

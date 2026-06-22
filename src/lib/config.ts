@@ -120,6 +120,14 @@ export const config = {
    * EIP-712 receipt proves provenance/integrity, not correctness.
    */
   reasoningVerdictUrl: process.env.REASONING_VERDICT_URL || "http://127.0.0.1:8094",
+  /**
+   * runtime-eol GATE URL — deterministic signed EOL verdict for a {product,
+   * version} (the decision tier of the runtime-eol broadcast feed). Runs on the
+   * same host (byte-runtime-eol-gate.service, port 8095); NOT exposed via
+   * cloudflared — the paywalled POST /feeds/runtime-eol route is its only public
+   * surface. GET /feeds/runtime-eol still serves the publisher broadcast.
+   */
+  runtimeEolGateUrl: process.env.RUNTIME_EOL_GATE_URL || "http://127.0.0.1:8095",
   // (Removed `byteIndexerUrl` 2026-05-25 — was dead code; the actual data
   // path uses DISCOVERY_API_URL read in feeds/generic.ts, defaulting to
   // https://api.payperbyte.io. The historical BYTE_INDEXER_URL env was a
