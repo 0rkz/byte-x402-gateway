@@ -33,7 +33,7 @@ import { config, feedRegistry, networkInfo } from "./config.js";
 // appeared in the doc anyway — dropped here to stay in sync with POST_ORACLES
 // (index.ts) and avoid advertising a delisted resource if it is ever re-added
 // to the registry before its gate.
-const POST_ORACLE_IDS = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "reasoning-verdict", "runtime-eol"]);
+const POST_ORACLE_IDS = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel"]);
 
 /** Per-oracle request-body schema, keyed by feed id. Each oracle takes a
  *  different question/claim/citation field plus optional on-chain delivery

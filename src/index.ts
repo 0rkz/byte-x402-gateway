@@ -116,7 +116,7 @@ function buildAccepts(priceAtomic: string) {
 // request body; broadcast/scheduled feeds are GET. Some publisher-backed
 // oracles offer both (subscribe-then-listen via GET indexer proxy AND
 // synchronous request-response via POST proxy) — see usc-statute.
-const POST_ORACLES = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "reasoning-verdict", "runtime-eol"]);
+const POST_ORACLES = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel"]);
 
 // Bazaar discovery extension per route. Minimal output examples per feed shape
 // — just enough for checkIfBazaarNeeded() in @x402/express to detect the
@@ -765,6 +765,36 @@ app.post("/feeds/runtime-eol", async (req, res) => {
     }
   } catch (err: any) {
     res.status(502).json({ error: "runtime-eol gate proxy failed", detail: err.message });
+  }
+});
+
+/**
+ * threat-intel (POST gate) — signed CISA-KEV exploit-exposure verdict.
+ * Body: { components: [string, …] }   (product/vendor/package names or CVE ids)
+ * 200: { answer: { verdict: ALLOW|WARN|BLOCK|ABSTAIN, matches[], kev_catalog{version,sha256}, … },
+ *        attestation: { … }, broadcast: { … } }
+ *
+ * Dual feed: GET /feeds/threat-intel serves the publisher KEV/CVE digest; this POST
+ * is the decision tier ("is anything I run actively exploited?"), with the pinned
+ * KEV catalog version/date/sha256 in the signed receipt. Forwarded BYTE-FOR-BYTE
+ * (sendAttestedRaw); FAILS CLOSED (502) when CISA is unreachable.
+ */
+app.post("/feeds/threat-intel", async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const upstream = await fetch(`${config.threatIntelGateUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await upstream.text();
+    if (upstream.ok) {
+      await sendAttestedRaw(res, text);
+    } else {
+      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+    }
+  } catch (err: any) {
+    res.status(502).json({ error: "threat-intel gate proxy failed", detail: err.message });
   }
 });
 

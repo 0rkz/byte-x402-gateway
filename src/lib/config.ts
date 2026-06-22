@@ -128,6 +128,14 @@ export const config = {
    * surface. GET /feeds/runtime-eol still serves the publisher broadcast.
    */
   runtimeEolGateUrl: process.env.RUNTIME_EOL_GATE_URL || "http://127.0.0.1:8095",
+  /**
+   * threat-intel GATE URL — signed CISA-KEV exploit-exposure verdict ("are any of
+   * MY components actively exploited?"). The decision tier of the threat-intel
+   * digest feed. Runs on the same host (byte-threat-intel-gate.service, port 8096);
+   * NOT exposed via cloudflared — the paywalled POST /feeds/threat-intel is its only
+   * public surface. GET /feeds/threat-intel still serves the publisher digest.
+   */
+  threatIntelGateUrl: process.env.THREAT_INTEL_GATE_URL || "http://127.0.0.1:8096",
   // (Removed `byteIndexerUrl` 2026-05-25 — was dead code; the actual data
   // path uses DISCOVERY_API_URL read in feeds/generic.ts, defaulting to
   // https://api.payperbyte.io. The historical BYTE_INDEXER_URL env was a
@@ -291,29 +299,45 @@ const TIER1_PLACEHOLDER = "0x0000000000000000000000000000000000000000" as const;
  * (evidence-pack/address-reputation/pkg-verdict/sanctions-screen) keep their own
  * explicit price via customPricedFeed.
  */
+// VALUE-TIERED schedule (2026-06-22 reprice): price signals exclusivity + data
+// prowess, not payload size. Tiers, top→bottom:
+//   T1 $0.05 — EXCLUSIVE verifiable decision oracles: signed ALLOW/WARN/BLOCK
+//              verdicts that prevent irreversible loss; no competitor ships
+//              verifiable (EIP-712) verdicts. (Also: the customPriced decision
+//              oracles address-reputation/pkg-verdict/sanctions-screen/
+//              reasoning-verdict, set in feedRegistry.)
+//   T1 $0.05 — EXCLUSIVE first-party compounding indices (byte-scored research
+//              nobody else publishes).
+//   T2 $0.03 — first-party SIGNED market data (provenance + DQI) — above
+//              commodity data-API pricing because it's first-party + verifiable.
+//   T3 $0.02 — signed compliance/dev gates + LLM-curated.
+//   T4 $0.01 — low-baseline / pre-launch.
+//   T5 $0.003-0.005 — commodity public-data relays: deliberately cheap +
+//              competitive (NOT exclusive — raw public bytes).
 const PRICE_OVERRIDES: Record<string, string> = {
-  // verdicts / high-value
-  "usc-statute": "50000",          // $0.05 — legal verdict
-  "threat-intel": "30000",         // $0.03 — security digest
-  // markets / financial data
-  "perp-funding": "20000",         // $0.02
-  "liquidation-stream": "20000",   // $0.02
-  "defi-yields": "20000",          // $0.02
-  "positioning-snapshot": "20000", // $0.02
-  "stablecoin-rails": "15000",     // $0.015
-  "x402-pulse": "10000",           // $0.01
-  "code-pulse": "10000",           // $0.01
-  "runtime-eol": "10000",          // $0.01
-  // commodity / breadth
-  "weather": "5000",               // $0.005
-  "news-feed": "5000",             // $0.005
-  "earthquakes": "2000",           // $0.002
-  "space-weather": "2000",         // $0.002
-  // agent-infrastructure index — value-priced research feeds (compile + scrape + score),
-  // not size-priced; $0.05/snapshot, the decision-oracle tier.
+  // T1 — exclusive verifiable decision oracles
+  "usc-statute": "50000",          // $0.05 — signed legal verdict
+  "threat-intel": "50000",         // $0.05 — signed CISA-KEV exploit-exposure gate (decision-grade)
+  // T1 — exclusive first-party compounding indices
   "agent-compute": "50000",        // $0.05
   "agent-memory": "50000",         // $0.05
   "agent-tools": "50000",          // $0.05
+  // T2 — first-party SIGNED market data (provenance + DQI)
+  "defi-yields": "30000",          // $0.03
+  "liquidation-stream": "30000",   // $0.03
+  "positioning-snapshot": "30000", // $0.03
+  "stablecoin-rails": "30000",     // $0.03
+  // T3 — signed compliance/dev gates + LLM-curated
+  "runtime-eol": "20000",          // $0.02 — signed EOL compliance gate
+  "code-pulse": "20000",           // $0.02 — release/upgrade-risk tracker
+  "perp-funding": "20000",         // $0.02 (deprecation candidate — see FEED_ENHANCEMENT_ROADMAP)
+  // T4 — low-baseline / pre-launch
+  "news-feed": "10000",            // $0.01 — LLM-curated (competes w/ buyer's own LLM; keep modest)
+  "x402-pulse": "10000",           // $0.01 — zero-baseline until live facilitator traffic
+  // T5 — commodity public-data relays (cheap + competitive; not exclusive)
+  "weather": "5000",               // $0.005
+  "earthquakes": "3000",           // $0.003
+  "space-weather": "3000",         // $0.003
 };
 
 export const feedRegistry: FeedMetadata[] = [
@@ -342,10 +366,11 @@ export const feedRegistry: FeedMetadata[] = [
   indexerFeed("stablecoin-rails", "Stablecoin Rails", "Cross-chain stablecoin supply (USDC/USDT/DAI/PYUSD) + Circle iris-api health.", "300s", 4000, "0x48faae04641bca4acaa5a030f4b0b97f1184b167", "commerce"),
   indexerFeed("perp-funding", "Perp Funding Rates", "Cross-venue perpetual-swap funding rates (Hyperliquid, dYdX, Aevo live; GMX + Vertex coming v1.1) + spread. Annualized.", "300s", 1500, "0x533f447c2b82cf903e8189778636ef96c652c892", "financial"),
   indexerFeed("usc-statute", "US Code Statute Oracle", "On-demand current text of a US Code section, public-domain, with content hash + source URLs. Q&A oracle.", "on-demand", 2500, "0xd056caa08710473649d48e9e9e7c126d4f24d870", "legal"),
-  // evidence-pack is value/compute-priced (higher-margin RAG meta-oracle per
-  // §13), NOT per-KB. Raised to $0.10 (2026-06-12) — its buyers aren't the
-  // signed-vs-free skeptics, so the premium signals the LLM+retrieval cost.
-  customPricedFeed("evidence-pack", "Evidence Pack Oracle", "RAG-citable meta-oracle: retrieve from PayPerByte factual feeds + LLM grounding + signed verdict with sources. Higher-margin product per LAUNCH_PLAN §13.", "on-demand", 4000, "general", "100000"),
+  // evidence-pack REPRICED $0.10 -> $0.02 (2026-06-22): its §13 determinism gate
+  // does not yet pass (true-rate ~0.5, hallucinated excerpts), so it ships only
+  // the citation-bundle today — pricing it as the highest feed was a credibility
+  // risk. Restore $0.10 + the supported/refuted verdict ONLY after the gate clears.
+  customPricedFeed("evidence-pack", "Evidence Pack Oracle", "RAG-citable meta-oracle: retrieve from PayPerByte factual feeds + signed citation bundle with sources. (Supported/refuted verdict gated on §13 accuracy clearance.)", "on-demand", 4000, "general", "20000"),
   // address-reputation is decision-priced, not size-priced (a wrong ALLOW on a
   // drainer address = irreversible USDC loss) — same $0.05 tier as evidence-pack.
   customPricedFeed("address-reputation", "Address Reputation Oracle", "Agentic-payments go/no-go verdict: synchronous signed ALLOW/WARN/BLOCK for (domain, receiving address, amount, chain) BEFORE releasing USDC. ar-v1 ruleset over RDAP/TLS/DNS/Wayback domain signals + on-chain receiving-address signals + curated known-bad blocklist. The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting.", "on-demand", 2500, "commerce", "50000"),
