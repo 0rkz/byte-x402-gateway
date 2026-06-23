@@ -390,7 +390,7 @@ function buildX402Manifest() {
     name: "PayPerByte",
     description:
       `Per-byte USDC data feeds + oracles for AI agents. First-party, verifiable, no token. Settlement on ${net.label}.`,
-    provider: { organization: "BYTEDev Inc.", url: "https://www.payperbyte.io" },
+    provider: { organization: "PayPerByte", url: "https://www.payperbyte.io" },
     network: config.network,
     status: net.status,
     facilitator: config.facilitatorUrl,
@@ -440,7 +440,7 @@ app.get("/.well-known/agent.json", (_req, res) => {
       `Per-byte USDC data feeds + oracles for AI agents — pay-per-call via x402, settled in USDC on ${net.label}. Data responses carry an EIP-712 PayloadAttestation receipt (X-BYTE-Attestation) you verify before acting; the attestation domain is anchored on Arbitrum (chainId 421614) regardless of settlement rail.`,
     url: "https://x402.payperbyte.io",
     version: "0.3.0",
-    provider: { organization: "BYTEDev Inc.", url: "https://www.payperbyte.io" },
+    provider: { organization: "PayPerByte", url: "https://www.payperbyte.io" },
     capabilities: {
       payments: {
         protocol: "x402",
