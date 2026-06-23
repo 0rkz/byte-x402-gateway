@@ -24,6 +24,7 @@ import {
   attesterAddress,
   attestationDomain,
 } from "./lib/attestation.js";
+import { logDelivery } from "./lib/delivery-log.js";
 
 // Solana support — conditionally loaded at startup
 let ExactSvmScheme: any = null;
@@ -55,6 +56,16 @@ app.set("trust proxy", 1);
 // sent. 32 KB cap — honest oracle queries are <1 KB; this stops the
 // "POST 100 MB" memory-pressure class (mirrors the feeds' own 16 KB caps).
 app.use(express.json({ limit: "32kb" }));
+
+// Per-paid-delivery logging. Attach a finish hook to every request; the logger
+// records ONLY successful 200s that carry an X-BYTE-Attestation on a /feeds/<slug>
+// route — the feed-attribution tuple {ts, feed, status, payer, amountUSDC} the
+// revenue watcher joins on. Registered before the payment gate so it sees the
+// final status/headers of every response. Throw-free; never blocks a delivery.
+app.use((req, res, next) => {
+  res.on("finish", () => logDelivery(req, res));
+  next();
+});
 
 // ---------------------------------------------------------------------------
 // x402 Payment Middleware
