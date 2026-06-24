@@ -39,6 +39,18 @@ const POST_ORACLE_IDS = new Set(["evidence-pack", "usc-statute", "address-reputa
  *  different question/claim/citation field plus optional on-chain delivery
  *  binding. Used to emit a correct requestBody for every POST operation. */
 const ORACLE_REQUEST_SCHEMAS: Record<string, object> = {
+  "reasoning-verdict": {
+    type: "object",
+    properties: {
+      subject: {
+        type: "string",
+        minLength: 1,
+        description:
+          "The action/text to judge — the message, payload, proposal, payee, or tool-call the agent is about to act on. Returns a signed ALLOW/WARN/BLOCK/ABSTAIN verdict + a 0-100 safe-to-proceed score + reasons from a LOCAL model (no data egress).",
+      },
+    },
+    required: ["subject"],
+  },
   "evidence-pack": {
     type: "object",
     properties: {
