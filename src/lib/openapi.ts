@@ -48,6 +48,15 @@ export const ORACLE_REQUEST_SCHEMAS: Record<string, Record<string, unknown>> = {
         description:
           "The action/text to judge — the message, payload, proposal, payee, or tool-call the agent is about to act on. Returns a signed ALLOW/WARN/BLOCK/ABSTAIN verdict + a 0-100 safe-to-proceed score + reasons from a LOCAL model (no data egress).",
       },
+      kind: {
+        type: "string",
+        enum: ["payee", "transaction", "contract", "message", "proposal", "tool-call", "url", "claim", "general"],
+        description: "Optional. The action type, to focus the judgment (default \"general\"). Echoed back in answer.kind.",
+      },
+      context: {
+        type: "string",
+        description: "Optional. Extra context for the judgment — a string, or a JSON object/array (it is stringified). Length-capped server-side.",
+      },
     },
     required: ["subject"],
   },
@@ -85,7 +94,7 @@ export const ORACLE_REQUEST_SCHEMAS: Record<string, Record<string, unknown>> = {
       claim: {
         type: "string",
         minLength: 1,
-        description: "The claim to fact-check and ground against cited sources, e.g. \"USDC is fully reserved 1:1\".",
+        description: "The statement to research and ground against cited sources — returns a signed citation bundle (retrieved sources + excerpts), e.g. \"USDC is fully reserved 1:1\". The receipt proves provenance/integrity of the returned bundle, NOT that the statement is true; no correctness or fact-check verdict is asserted.",
       },
       domains: {
         type: "array",
@@ -95,7 +104,7 @@ export const ORACLE_REQUEST_SCHEMAS: Record<string, Record<string, unknown>> = {
       max_sources: {
         type: "integer",
         minimum: 1,
-        description: "Optional cap on the number of cited sources in the returned evidence pack. Price is $0.05 base + $0.005 per source, so this also caps cost.",
+        description: "Optional cap on the number of cited sources in the returned evidence pack — bounds the response size. The price is a flat $0.02 per call regardless of how many sources are returned (it is not metered per source).",
       },
       subscriber_address: {
         type: "string",
@@ -797,23 +806,119 @@ function pascal(slug: string): string {
     .join("");
 }
 
-/** Generic signed-verdict response schema for the oracle POST operations. The
- *  gateway returns a request ACK; the answer/verdict is broadcast on-chain to
- *  the subscriber address. */
-const oracleAckSchema = {
+/** The publisher's embedded EIP-712 PayloadAttestation block, shared by the
+ *  synchronous oracle responses. Recompute keccak256 over the canonical
+ *  (insertion-order, minified) `answer` bytes AS RECEIVED and recover the signer
+ *  before acting — the receipt proves provenance + integrity, NOT correctness. */
+const payloadAttestationSchema = {
   type: "object",
+  description:
+    "Publisher's EIP-712 PayloadAttestation over keccak256 of the canonical " +
+    "(insertion-order, minified) answer bytes. Recompute the hash over `answer` " +
+    "AS RECEIVED and recover the signer before acting. Proves provenance + " +
+    "integrity (which publisher signed these exact bytes), NOT that the answer " +
+    "is correct.",
   properties: {
-    request_id: { type: "string", description: "Tracking id for this query." },
-    est_eta_ms: {
-      type: "integer",
-      description: "Estimated milliseconds until the on-chain answer broadcast lands.",
-    },
-    publisher: {
-      type: "string",
-      description: "On-chain address of the publisher answering the query.",
+    payloadHash: { type: "string" },
+    payloadLength: { type: "integer" },
+    deadline: { type: "integer" },
+    signer: { type: "string" },
+    signature: { type: "string" },
+    domain: {
+      type: "object",
+      description: "EIP-712 domain {name:\"BYTE Library\", version:\"1\", chainId:421614, verifyingContract}.",
     },
   },
-  required: ["request_id", "publisher"],
+};
+
+/** On-chain broadcast status block — disabled on this rail; the synchronous
+ *  signed answer IS the product. */
+const broadcastDisabledSchema = {
+  type: "object",
+  description: "On-chain broadcast status — disabled on this rail; the synchronous signed answer is the product (ok:false).",
+};
+
+/**
+ * Generic SYNCHRONOUS response schema for the oracle POST operations that don't
+ * have a bespoke schema (evidence-pack, runtime-eol, threat-intel, usc-statute).
+ *
+ * These return the answer SYNCHRONOUSLY in the paid 200 body — there is NO async
+ * on-chain ACK and no `request_id`/`est_eta_ms`. The decision oracles
+ * (runtime-eol, threat-intel) put a signed ALLOW/WARN/BLOCK/ABSTAIN verdict in
+ * `answer`; the data oracles (usc-statute statute text, evidence-pack citation
+ * bundle) put their feed-shaped payload there. `attestation` is the publisher's
+ * EIP-712 receipt over the canonical answer bytes (present when the upstream
+ * signs; usc-statute carries no embedded receipt and relies on the gateway's
+ * X-BYTE-Attestation response header instead). The receipt proves provenance +
+ * integrity, NOT correctness.
+ */
+const syncOracleResponseSchema = {
+  type: "object",
+  properties: {
+    answer: {
+      type: "object",
+      description:
+        "The synchronous answer. Decision oracles return {verdict: ALLOW|WARN|BLOCK|ABSTAIN, score, reasons, methodology/ruleset, ...}; data oracles return their feed-shaped payload (e.g. statute text + content hash + source URLs, or a citation bundle of retrieved sources). Shape varies per feed — see the operation description.",
+    },
+    attestation: payloadAttestationSchema,
+    broadcast: broadcastDisabledSchema,
+    note: {
+      type: "string",
+      description: "Present ONLY when the answer is returned unsigned (no publisher key configured) — the `attestation` is then absent and the gateway X-BYTE-Attestation header is the only receipt.",
+    },
+  },
+  required: ["answer"],
+};
+
+/**
+ * reasoning-verdict — explicit SYNCHRONOUS response schema (the flagship
+ * local-LLM verify-before-act oracle). The live service (data-feeds/
+ * reasoning-verdict/server.py, POST /query) returns { answer, attestation,
+ * broadcast } in the paid 200 — NOT an async ACK. The embedded attestation signs
+ * the canonical `answer` bytes; recompute and recover the signer before acting.
+ * The verdict is ADVISORY — the receipt proves provenance + integrity, NOT that
+ * the verdict is correct (the honesty notice is baked into answer.disclaimer).
+ */
+const reasoningVerdictResponseSchema = {
+  type: "object",
+  properties: {
+    answer: {
+      type: "object",
+      properties: {
+        schema: { const: "reasoning-verdict/v1" },
+        kind: {
+          type: "string",
+          enum: ["payee", "transaction", "contract", "message", "proposal", "tool-call", "url", "claim", "general"],
+          description: "The classified action type the subject was judged as.",
+        },
+        subject: { type: "string", description: "The action/text that was judged (normalized, ASCII, length-capped)." },
+        verdict: {
+          type: "string",
+          enum: ["ALLOW", "WARN", "BLOCK", "ABSTAIN"],
+          description: "Go/no-go: ALLOW = no material risk seen; WARN = proceed only with caution / human review; BLOCK = do not proceed; ABSTAIN = insufficient information to judge.",
+        },
+        score: { type: "integer", minimum: 0, maximum: 100, description: "Safe-to-proceed score (100 = clearly safe, 0 = clearly unsafe)." },
+        summary: { type: "string", description: "One-sentence rationale." },
+        reasons: { type: "array", items: { type: "string" } },
+        confidence: { type: "string", enum: ["low", "medium", "high"] },
+        model: { type: "string", description: "The LOCAL model that produced the verdict (no third-party API; no data egress)." },
+        ruleset: { const: "rv-v1" },
+        ts: { type: "integer", description: "Unix seconds the verdict was produced." },
+        disclaimer: {
+          type: "string",
+          description: "Honesty notice signed into the bytes: the receipt proves these exact bytes came from this publisher; it does NOT guarantee the verdict is correct. AI-generated advisory analysis — verify independently before acting.",
+        },
+      },
+      required: ["schema", "kind", "subject", "verdict", "score", "summary", "reasons", "confidence", "model", "ruleset", "ts", "disclaimer"],
+    },
+    attestation: payloadAttestationSchema,
+    broadcast: broadcastDisabledSchema,
+    note: {
+      type: "string",
+      description: "Present ONLY when the verdict is returned unsigned (no publisher key configured).",
+    },
+  },
+  required: ["answer"],
 };
 
 /** Build the POST operation for a request-response oracle feed. */
@@ -821,7 +926,7 @@ function oraclePostOperation(f: { id: string; name: string; price: string; descr
   const reqSchema = ORACLE_REQUEST_SCHEMAS[f.id];
   return {
     operationId: `post${pascal(f.id)}`,
-    summary: `${f.name} — synchronous query, answer delivered on-chain (${f.price} per query ACK)`,
+    summary: `${f.name} — synchronous signed query/response (${f.price} per call)`,
     description: f.description,
     tags: ["Feeds"],
     security: [{ x402Payment: [] }],
@@ -830,7 +935,7 @@ function oraclePostOperation(f: { id: string; name: string; price: string; descr
       required: true,
       content: { "application/json": { schema: reqSchema } },
     },
-    responses: paidResponses(oracleAckSchema, f.priceAtomic),
+    responses: paidResponses(syncOracleResponseSchema, f.priceAtomic),
   };
 }
 
@@ -878,6 +983,7 @@ function bespokeOraclePaths(): Record<string, unknown> {
     "sanctions-screen",
     "liquidation-stream",
     "positioning-snapshot",
+    "reasoning-verdict",
   ]);
   const paths: Record<string, unknown> = {};
   for (const f of feedRegistry) {
@@ -896,6 +1002,7 @@ export function buildOpenApiDoc() {
   const sanctionsScreen = feed("sanctions-screen");
   const liquidationStream = feed("liquidation-stream");
   const positioningSnapshot = feed("positioning-snapshot");
+  const reasoningVerdict = feed("reasoning-verdict");
 
   return {
     openapi: "3.1.0",
@@ -903,11 +1010,14 @@ export function buildOpenApiDoc() {
       title: "PayPerByte x402 Gateway",
       version: "0.3.0",
       description:
-        "Verified, provenance-first data feeds for AI agents. Every payload " +
-        "is cryptographically signed and EIP-712 PayloadAttestation " +
-        "provenance-stamped — covering crypto markets, DeFi yields, weather, " +
-        "earthquakes, news, code-pulse, threat-intel, address reputation, " +
-        "sanctions screening, and supply-chain verdicts. " +
+        "Cryptographically attested, provenance-verifiable data feeds for AI " +
+        "agents. Every payload is cryptographically signed and EIP-712 " +
+        "PayloadAttestation provenance-stamped — covering crypto markets, DeFi " +
+        "yields, weather, earthquakes, news, code-pulse, threat-intel, address " +
+        "reputation, sanctions screening, and supply-chain verdicts. The " +
+        "attestation proves authenticity and tamper-evidence — which publisher " +
+        "signed these exact bytes — NOT the correctness of the underlying data " +
+        "or any verdict. " +
         "Pay per call in USDC over x402 with no API keys — a " +
         "wallet, not a secret on the box. Settlement is on " +
         `${networkInfo().label} (${config.network}). Price is per-feed, derived from expected ` +
@@ -921,10 +1031,13 @@ export function buildOpenApiDoc() {
         "price (see x-payment-info per operation); the catalog at GET /feeds " +
         "(free, ungated) lists every feed with its computed price and " +
         "expected payload size. POST oracle endpoints (address-reputation, " +
-        "sanctions-screen, pkg-verdict, evidence-pack, usc-statute, " +
-        "liquidation-stream, positioning-snapshot) require a JSON body — " +
-        "see the requestBody schema per operation. Free, no " +
-        "payment: GET /feeds and GET /health.",
+        "sanctions-screen, pkg-verdict, reasoning-verdict, evidence-pack, " +
+        "usc-statute, runtime-eol, threat-intel, liquidation-stream, " +
+        "positioning-snapshot) require a JSON body and return their signed " +
+        "answer SYNCHRONOUSLY in the 200 — see the requestBody/response schema " +
+        "per operation. usc-statute, runtime-eol, and threat-intel ALSO serve a " +
+        "latest-broadcast GET on the same path. Free, no payment: GET /feeds and " +
+        "GET /health.",
     },
     servers: [{ url: "https://x402.payperbyte.io" }],
     // x402 payment is the auth scheme for every paid operation. Declared as an
@@ -1034,6 +1147,23 @@ export function buildOpenApiDoc() {
           responses: paidResponses(positioningSnapshotResponseSchema, positioningSnapshot.priceAtomic),
         },
       },
+      "/feeds/reasoning-verdict": {
+        post: {
+          operationId: "postReasoningVerdict",
+          summary: `Reasoning Verdict — synchronous signed ALLOW/WARN/BLOCK/ABSTAIN verify-before-act verdict from a local LLM (${reasoningVerdict.price} per call)`,
+          description: reasoningVerdict.description,
+          tags: ["Feeds"],
+          security: [{ x402Payment: [] }],
+          "x-payment-info": paymentInfo(reasoningVerdict.priceAtomic),
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": { schema: ORACLE_REQUEST_SCHEMAS["reasoning-verdict"] },
+            },
+          },
+          responses: paidResponses(reasoningVerdictResponseSchema, reasoningVerdict.priceAtomic),
+        },
+      },
       ...bespokeOraclePaths(),
       ...indexerFeedPaths(),
       // NOTE: the free operational endpoints (GET /feeds catalog, GET /health)
@@ -1062,13 +1192,14 @@ export function buildOpenApiDoc() {
         CryptoTop100Response: cryptoTop100Schema,
         DefiYieldsResponse: defiYieldsSchema,
         ByteLibraryFeedResponse: byteLibraryFeedSchema,
-        OracleAck: oracleAckSchema,
+        SyncOracleResponse: syncOracleResponseSchema,
         AddressReputationResponse: addressReputationResponseSchema,
         PkgVerdictResponse: pkgVerdictResponseSchema,
         SanctionsScreenResponse: sanctionsScreenResponseSchema,
         TokenSafetyResponse: tokenSafetyResponseSchema,
         LiquidationStreamResponse: liquidationStreamResponseSchema,
         PositioningSnapshotResponse: positioningSnapshotResponseSchema,
+        ReasoningVerdictResponse: reasoningVerdictResponseSchema,
       },
     },
   };

@@ -370,7 +370,7 @@ export const feedRegistry: FeedMetadata[] = [
   // does not yet pass (true-rate ~0.5, hallucinated excerpts), so it ships only
   // the citation-bundle today — pricing it as the highest feed was a credibility
   // risk. Restore $0.10 + the supported/refuted verdict ONLY after the gate clears.
-  customPricedFeed("evidence-pack", "Evidence Pack Oracle", "RAG-citable meta-oracle: retrieve from PayPerByte factual feeds + signed citation bundle with sources. (Supported/refuted verdict gated on §13 accuracy clearance.)", "on-demand", 4000, "general", "20000"),
+  customPricedFeed("evidence-pack", "Evidence Pack Oracle", "RAG-citable meta-oracle: retrieve from PayPerByte factual feeds + signed citation bundle with sources.", "on-demand", 4000, "general", "20000"),
   // address-reputation is decision-priced, not size-priced (a wrong ALLOW on a
   // drainer address = irreversible USDC loss) — same $0.05 tier as evidence-pack.
   customPricedFeed("address-reputation", "Address Reputation Oracle", "Agentic-payments go/no-go verdict: synchronous signed ALLOW/WARN/BLOCK for (domain, receiving address, amount, chain) BEFORE releasing USDC. ar-v1 ruleset over RDAP/TLS/DNS/Wayback domain signals + on-chain receiving-address signals + curated known-bad blocklist. The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting.", "on-demand", 2500, "commerce", "50000"),

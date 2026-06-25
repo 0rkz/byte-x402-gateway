@@ -527,6 +527,30 @@ app.get("/openapi.json", (_req, res) => {
 });
 
 /**
+ * The discovery surface(s) a feed exposes, mirroring the live `paymentRoutes`
+ * map built above EXACTLY: a feed advertises a POST oracle entry if it's in
+ * POST_ORACLES, and a GET entry if it's publisher-backed (latest broadcast) or a
+ * bespoke non-oracle feed. Dual-pattern feeds (usc-statute, runtime-eol,
+ * threat-intel) therefore expose BOTH — so the x402 manifest and agent card stay
+ * consistent with the OpenAPI doc (which already emits both operations) and with
+ * the actual gated routes. `idSuffix` keeps agent-card skill ids unique for the
+ * secondary GET surface of a dual feed; `nameSuffix` labels it as the broadcast.
+ */
+function feedSurfaces(
+  feed: { id: string; publisher?: string },
+): { method: "GET" | "POST"; idSuffix: string; nameSuffix: string }[] {
+  const out: { method: "GET" | "POST"; idSuffix: string; nameSuffix: string }[] = [];
+  const isOracle = POST_ORACLES.has(feed.id);
+  if (isOracle) out.push({ method: "POST", idSuffix: "", nameSuffix: "" });
+  if (feed.publisher) {
+    out.push({ method: "GET", idSuffix: isOracle ? "-latest" : "", nameSuffix: isOracle ? " (latest broadcast)" : "" });
+  } else if (!isOracle) {
+    out.push({ method: "GET", idSuffix: "", nameSuffix: "" });
+  }
+  return out;
+}
+
+/**
  * x402 resource discovery manifest (/.well-known/x402.json). Pull-based
  * discovery: x402 indexers (x402scan, x402engine, CDP discovery) crawl a
  * well-known path to enumerate payable resources without manual submission.
@@ -541,26 +565,31 @@ function buildX402Manifest() {
     x402Version: 1,
     name: "PayPerByte",
     description:
-      `Per-byte USDC data feeds + oracles for AI agents. First-party, verifiable, no token. Settlement on ${net.label}.`,
+      `Per-byte USDC data feeds + oracles for AI agents. First-party, with a verify-before-act EIP-712 receipt (authenticity + tamper-evidence, not data correctness); no token. Settlement on ${net.label}.`,
     provider: { organization: "PayPerByte", url: "https://www.payperbyte.io" },
     network: config.network,
     status: net.status,
     facilitator: config.facilitatorUrl,
     catalog: "https://x402.payperbyte.io/feeds",
-    resources: feedRegistry.map((feed) => ({
-      resource: `https://x402.payperbyte.io${feed.endpoint}`,
-      method: POST_ORACLES.has(feed.id) ? "POST" : "GET",
-      name: feed.name,
-      description: feed.description,
-      category: feed.disclaimerCategory,
-      provenance: feed.provenance,
-      price: feed.price,
-      accepts: buildAccepts(feed.priceAtomic),
-      metadata: {
-        expectedSizeBytes: feed.expectedSizeBytes,
-        updateFrequency: feed.updateFrequency,
-      },
-    })),
+    // One resource entry per live (method, path) surface — dual-pattern feeds
+    // (usc-statute/runtime-eol/threat-intel) emit BOTH a POST (synchronous query)
+    // and a GET (latest broadcast), matching paymentRoutes + the OpenAPI doc.
+    resources: feedRegistry.flatMap((feed) =>
+      feedSurfaces(feed).map((s) => ({
+        resource: `https://x402.payperbyte.io${feed.endpoint}`,
+        method: s.method,
+        name: `${feed.name}${s.nameSuffix}`,
+        description: feed.description,
+        category: feed.disclaimerCategory,
+        provenance: feed.provenance,
+        price: feed.price,
+        accepts: buildAccepts(feed.priceAtomic),
+        metadata: {
+          expectedSizeBytes: feed.expectedSizeBytes,
+          updateFrequency: feed.updateFrequency,
+        },
+      })),
+    ),
   };
 }
 
@@ -615,16 +644,21 @@ app.get("/.well-known/agent.json", (_req, res) => {
             "recoverTypedDataAddress(domain, {PayloadAttestation}, message, signature) === attester",
         }
       : undefined,
-    skills: feedRegistry.map((feed) => ({
-      id: feed.id,
-      name: feed.name,
-      description: feed.description,
-      // Full URL + verb so an agent self-routes correctly — the bare id alone
-      // (e.g. "defi-yields") would 404; the paid resource is at /feeds/<slug>.
-      url: `https://x402.payperbyte.io${feed.endpoint}`,
-      method: POST_ORACLES.has(feed.id) ? "POST" : "GET",
-      tags: [feed.disclaimerCategory, "x402", "usdc", net.chain],
-    })),
+    // One skill per live (method, path) surface — dual-pattern feeds emit both a
+    // POST (synchronous query) and a GET (latest broadcast) skill with a unique
+    // id, so the agent card matches paymentRoutes + the OpenAPI doc + x402.json.
+    skills: feedRegistry.flatMap((feed) =>
+      feedSurfaces(feed).map((s) => ({
+        id: `${feed.id}${s.idSuffix}`,
+        name: `${feed.name}${s.nameSuffix}`,
+        description: feed.description,
+        // Full URL + verb so an agent self-routes correctly — the bare id alone
+        // (e.g. "defi-yields") would 404; the paid resource is at /feeds/<slug>.
+        url: `https://x402.payperbyte.io${feed.endpoint}`,
+        method: s.method,
+        tags: [feed.disclaimerCategory, "x402", "usdc", net.chain],
+      })),
+    ),
     endpoints: {
       catalog: "https://x402.payperbyte.io/feeds",
       openapi: "https://x402.payperbyte.io/openapi.json",
