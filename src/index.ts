@@ -62,9 +62,14 @@ app.disable("x-powered-by");
 // 301 — a redirect would break the POST-with-payment replay.) Must precede the
 // payment gate. The bare catalog `/feeds/` is left alone (no slug to canonicalize).
 app.use((req, _res, next) => {
-  const m = /^(\/feeds\/[^/?#]+)\/+(\?.*)?$/.exec(req.url);
+  // Case-INSENSITIVE on the `/feeds/` prefix: the x402 route layer matches paths
+  // case-insensitively, so `/FEEDS/slug/` also reaches a feed handler — emit a
+  // canonical lowercase `/feeds/` prefix, else that request would still advertise
+  // a non-canonical `resource.url` (…/FEEDS/slug) and a strict client rejects it.
+  // The slug (m[1]) and query (m[2]) are preserved as-is; bare `/feeds/` is untouched.
+  const m = /^\/feeds\/([^/?#]+)\/+(\?.*)?$/i.exec(req.url);
   if (m) {
-    const canonical = m[1] + (m[2] ?? "");
+    const canonical = "/feeds/" + m[1] + (m[2] ?? "");
     req.url = canonical;
     (req as unknown as { originalUrl: string }).originalUrl = canonical;
   }
@@ -577,6 +582,33 @@ function feedSurfaces(
  * non-Coinbase indexers and the DNS-TXT discovery draft's manifest fetch.
  * Free, ungated; self-updates from feedRegistry.
  */
+/**
+ * The verify-before-act receipt descriptor — present on every paid 200-response
+ * as the X-BYTE-Attestation header. Shared by BOTH agent.json AND x402.json so a
+ * client bootstrapping from EITHER canonical entry point learns how to verify
+ * receipts (previously only agent.json carried it). `anchorNote` explains why the
+ * domain chainId is a testnet id even though funds settle on mainnet. Returns
+ * undefined when no attestation key is configured.
+ */
+function attestationReceiptBlock() {
+  if (!attestationEnabled()) return undefined;
+  return {
+    header: "X-BYTE-Attestation",
+    scheme: "EIP712-PayloadAttestation",
+    domain: attestationDomain(),
+    attester: attesterAddress(),
+    verify:
+      "keccak256(responseBody) === payloadHash AND " +
+      "recoverTypedDataAddress(domain, {PayloadAttestation}, message, signature) === attester",
+    anchorNote:
+      "domain.chainId 421614 = Arbitrum Sepolia, a TESTNET — it is a FROZEN signing " +
+      "namespace for EIP-712 signature recovery, NOT a settlement rail. Payments settle " +
+      "in USDC on Base mainnet (eip155:8453); no funds move on testnet. The chainId is a " +
+      "consensus constant: it stays 421614 regardless of where you pay, so every receipt " +
+      "verifies against the same domain. (Mainnet re-anchoring is audit-gated.)",
+  };
+}
+
 function buildX402Manifest() {
   const net = networkInfo();
   return {
@@ -589,6 +621,13 @@ function buildX402Manifest() {
     status: net.status,
     facilitator: config.facilitatorUrl,
     catalog: "https://x402.payperbyte.io/feeds",
+    // The verify-before-act receipt + pointers to the full discovery surfaces, so
+    // a client bootstrapping from the canonical /.well-known/x402.json (which used
+    // to carry payment info but ZERO receipt-verification info) can verify receipts
+    // and reach the agent card (full receipt spec + per-skill routing) + OpenAPI.
+    receipt: attestationReceiptBlock(),
+    agentCard: "https://x402.payperbyte.io/.well-known/agent.json",
+    openapi: "https://x402.payperbyte.io/openapi.json",
     // One resource entry per live (method, path) surface — dual-pattern feeds
     // (usc-statute/runtime-eol/threat-intel) emit BOTH a POST (synchronous query)
     // and a GET (latest broadcast), matching paymentRoutes + the OpenAPI doc.
@@ -650,18 +689,9 @@ app.get("/.well-known/agent.json", (_req, res) => {
       streaming: false,
     },
     // The verify-before-act receipt: present on every data 200-response as the
-    // X-BYTE-Attestation header. Omitted here only if no attestation key is set.
-    receipt: attestationEnabled()
-      ? {
-          header: "X-BYTE-Attestation",
-          scheme: "EIP712-PayloadAttestation",
-          domain: attestationDomain(),
-          attester: attesterAddress(),
-          verify:
-            "keccak256(responseBody) === payloadHash AND " +
-            "recoverTypedDataAddress(domain, {PayloadAttestation}, message, signature) === attester",
-        }
-      : undefined,
+    // X-BYTE-Attestation header. Shared with x402.json via attestationReceiptBlock()
+    // (carries the testnet-anchor `anchorNote`). Omitted only if no key is set.
+    receipt: attestationReceiptBlock(),
     // One skill per live (method, path) surface — dual-pattern feeds emit both a
     // POST (synchronous query) and a GET (latest broadcast) skill with a unique
     // id, so the agent card matches paymentRoutes + the OpenAPI doc + x402.json.

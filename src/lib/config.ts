@@ -362,7 +362,7 @@ export const feedRegistry: FeedMetadata[] = [
   // on-chain publisher address from the registerPublisher tx. expectedSizeBytes
   // estimates per the launch-plan-review §8 size-class table; resample once
   // a representative payload is broadcast.
-  indexerFeed("x402-pulse", "x402 Network Pulse", "Rolling-window metrics for the BYTE x402 facilitator: verify/settle counts, per-network/scheme breakdowns, top payers, optional on-chain cross-check. Metrics populate once the BYTE facilitator sees live traffic; currently pre-launch (zero-baseline).", "60s", 3000, "0x96cf11a1f9aa09dcd8fca91f6d45bd7cc5049c69", "commerce"),
+  indexerFeed("x402-pulse", "x402 Network Pulse", "Rolling-window metrics for the PayPerByte x402 facilitator: verify/settle counts, per-network/scheme breakdowns, top payers, optional on-chain cross-check.", "60s", 3000, "0x96cf11a1f9aa09dcd8fca91f6d45bd7cc5049c69", "commerce"),
   indexerFeed("stablecoin-rails", "Stablecoin Rails", "Cross-chain stablecoin supply (USDC/USDT/DAI/PYUSD) + Circle iris-api health.", "300s", 4000, "0x48faae04641bca4acaa5a030f4b0b97f1184b167", "commerce"),
   indexerFeed("perp-funding", "Perp Funding Rates", "Cross-venue perpetual-swap funding rates (Hyperliquid, dYdX, Aevo live; GMX + Vertex coming v1.1) + spread. Annualized.", "300s", 1500, "0x533f447c2b82cf903e8189778636ef96c652c892", "financial"),
   indexerFeed("usc-statute", "US Code Statute Oracle", "On-demand current text of a US Code section, public-domain, with content hash + source URLs. Q&A oracle.", "on-demand", 2500, "0xd056caa08710473649d48e9e9e7c126d4f24d870", "legal"),

@@ -921,6 +921,156 @@ const reasoningVerdictResponseSchema = {
   required: ["answer"],
 };
 
+/** Wrap a typed `answer` schema in the standard synchronous oracle envelope
+ *  { answer, attestation?, broadcast, note? }. `embeddedAttestation:false` for a
+ *  feed that carries no in-body receipt (usc-statute — its provenance receipt is
+ *  the gateway X-BYTE-Attestation response header). */
+function syncResponseWith(
+  answerSchema: object,
+  opts: { embeddedAttestation?: boolean; noteDesc?: string } = {},
+) {
+  const properties: Record<string, unknown> = { answer: answerSchema };
+  if (opts.embeddedAttestation !== false) properties.attestation = payloadAttestationSchema;
+  properties.broadcast = broadcastDisabledSchema;
+  properties.note = {
+    type: "string",
+    description:
+      opts.noteDesc ??
+      "Present ONLY when the answer is returned unsigned (no publisher key configured) — the gateway X-BYTE-Attestation header is then the only receipt.",
+  };
+  return { type: "object", properties, required: ["answer"] };
+}
+
+// ── Typed answer schemas for the generic POST oracles (was: one untyped shared
+//    `answer` object). Each matches its live service's response dict. ───────────
+
+// runtime-eol gate — data-feeds/runtime-eol/gate.py assess() answer dict.
+const runtimeEolAnswerSchema = {
+  type: "object",
+  properties: {
+    schema: { const: "runtime-eol/v1" },
+    product: { type: "string", description: "endoflife.date product id, e.g. \"nodejs\"." },
+    version: { type: "string", description: "The version/cycle queried." },
+    cycle: { type: ["string", "null"], description: "The release cycle matched on endoflife.date." },
+    status: { type: "string", enum: ["SUPPORTED", "EOL-SOON", "EOL", "UNKNOWN"], description: "Raw support status mapped into the verdict." },
+    verdict: { type: "string", enum: ["ALLOW", "WARN", "BLOCK", "ABSTAIN"], description: "ALLOW = supported; WARN = EOL soon; BLOCK = end-of-life; ABSTAIN = unknown/unreachable." },
+    score: { type: "integer", minimum: 0, maximum: 100 },
+    eol: { type: ["string", "null"], description: "EOL marker from endoflife.date: an EOL date string (YYYY-MM-DD), or the literal string \"false\"/\"true\", or null when unknown." },
+    days_until_eol: { type: ["integer", "null"] },
+    latest: { type: ["string", "null"], description: "Latest release in the cycle." },
+    is_latest: { type: ["boolean", "null"] },
+    reasons: { type: "array", items: { type: "string" } },
+    source: { const: "endoflife.date" },
+    source_url: { type: "string" },
+    ts: { type: "integer", description: "Unix seconds the verdict was produced." },
+    disclaimer: { type: "string", description: "Advisory notice: the receipt proves provenance/integrity, not correctness." },
+  },
+  required: ["schema", "product", "version", "status", "verdict", "score", "source", "ts", "disclaimer"],
+};
+
+// threat-intel gate — data-feeds/threat-intel/gate.py assess() answer dict.
+const threatIntelAnswerSchema = {
+  type: "object",
+  properties: {
+    schema: { const: "threat-intel-gate/v1" },
+    verdict: { type: "string", enum: ["ALLOW", "WARN", "BLOCK", "ABSTAIN"], description: "BLOCK = a queried component is in the CISA KEV (actively exploited); WARN = partial/heuristic match; ALLOW = none in KEV; ABSTAIN = catalog unavailable." },
+    score: { type: "integer", minimum: 0, maximum: 100 },
+    summary: { type: "string" },
+    checked: { type: "integer", description: "Number of components screened." },
+    match_count: { type: "integer", description: "Number of components matched in the KEV catalog." },
+    matches: { type: "array", description: "Per-match detail (component → KEV/CVE entry).", items: { type: "object" } },
+    kev_catalog: {
+      type: "object",
+      description: "VERSION-PINNING: the exact CISA KEV catalog judged against.",
+      properties: {
+        version: { type: "string" },
+        dateReleased: { type: "string" },
+        count: { type: "integer" },
+        sha256: { type: "string" },
+      },
+    },
+    source: { const: "CISA Known Exploited Vulnerabilities" },
+    source_url: { type: "string" },
+    ts: { type: "integer" },
+    disclaimer: { type: "string", description: "Advisory notice: the receipt proves provenance/integrity, not correctness." },
+  },
+  required: ["schema", "verdict", "score", "checked", "match_count", "matches", "kev_catalog", "source", "ts", "disclaimer"],
+};
+
+// usc-statute — data-feeds/usc-statute/server.py /query answer dict. NOTE: uses
+// `type` (not `schema`) + `answered_at` (not `ts`); carries NO embedded attestation.
+const uscStatuteAnswerSchema = {
+  type: "object",
+  properties: {
+    type: { const: "usc-statute/v1" },
+    query: { type: "object", properties: { citation: { type: "string" } } },
+    result: {
+      type: "object",
+      description: "The resolved statute: current public-domain text, a content hash, and source URLs (shape follows the usc-statute resolver). `error` is set here instead on an upstream failure.",
+    },
+    disclaimer_category: { const: "legal" },
+    disclaimer: { type: "string" },
+    request_id: { type: "string" },
+    answered_at: { type: "string", format: "date-time" },
+  },
+  required: ["type", "query", "result", "disclaimer", "answered_at"],
+};
+
+// evidence-pack — data-feeds/evidence-pack/server.py answer dict. The `verdict`/
+// `confidence` are ADVISORY grounding signals, NOT a certified correctness verdict.
+const evidencePackAnswerSchema = {
+  type: "object",
+  properties: {
+    type: { const: "evidence-pack/v1" },
+    query: {
+      type: "object",
+      properties: {
+        claim: { type: "string" },
+        domains: { type: "array", items: { type: "string" } },
+        max_sources: { type: ["integer", "null"] },
+      },
+    },
+    verdict: { type: "string", description: "ADVISORY grounding signal from the NLI backend (one of \"supported\", \"contradicted\", \"unverifiable\") — NOT a certified correctness verdict. The signed receipt proves the bundle's provenance, not that the claim is true; judge the cited sources yourself." },
+    confidence: { type: "number", minimum: 0, maximum: 1, description: "Advisory backend confidence (0-1) for the grounding signal — not a calibrated truth probability." },
+    reasoning: { type: "string" },
+    sources: { type: "array", description: "Retrieved + cited sources (url, excerpt, entailment/contradiction scores).", items: { type: "object" } },
+    grounding_backend: { type: ["string", "null"] },
+    grounding_model: { type: ["string", "null"] },
+    retrieval: {
+      type: "object",
+      properties: {
+        top_k: { type: "integer" },
+        chunks_evaluated: { type: "integer" },
+        sources_collected: { type: "integer" },
+      },
+    },
+    disclaimer_category: { const: "general" },
+    disclaimer: { type: "string" },
+    request_id: { type: "string" },
+    answered_at: { type: "string", format: "date-time" },
+  },
+  required: ["type", "query", "sources", "disclaimer", "answered_at"],
+};
+
+const runtimeEolResponseSchema = syncResponseWith(runtimeEolAnswerSchema);
+const threatIntelResponseSchema = syncResponseWith(threatIntelAnswerSchema);
+const evidencePackResponseSchema = syncResponseWith(evidencePackAnswerSchema);
+const uscStatuteResponseSchema = syncResponseWith(uscStatuteAnswerSchema, {
+  embeddedAttestation: false,
+  noteDesc:
+    "usc-statute carries NO embedded attestation — its provenance receipt is the gateway X-BYTE-Attestation response header. `note` appears on degraded/upstream-error paths.",
+});
+
+/** Per-feed typed response schema for the generic POST oracles — fills the
+ *  previously-untyped shared `answer`. Feeds not listed fall back to the generic
+ *  syncOracleResponseSchema. */
+const ORACLE_RESPONSE_SCHEMAS: Record<string, object> = {
+  "runtime-eol": runtimeEolResponseSchema,
+  "threat-intel": threatIntelResponseSchema,
+  "evidence-pack": evidencePackResponseSchema,
+  "usc-statute": uscStatuteResponseSchema,
+};
+
 /** Build the POST operation for a request-response oracle feed. */
 function oraclePostOperation(f: { id: string; name: string; price: string; description: string; priceAtomic: string }) {
   const reqSchema = ORACLE_REQUEST_SCHEMAS[f.id];
@@ -935,7 +1085,7 @@ function oraclePostOperation(f: { id: string; name: string; price: string; descr
       required: true,
       content: { "application/json": { schema: reqSchema } },
     },
-    responses: paidResponses(syncOracleResponseSchema, f.priceAtomic),
+    responses: paidResponses(ORACLE_RESPONSE_SCHEMAS[f.id] ?? syncOracleResponseSchema, f.priceAtomic),
   };
 }
 
@@ -1038,10 +1188,29 @@ export function buildOpenApiDoc() {
         "per operation. usc-statute, runtime-eol, and threat-intel ALSO serve a " +
         "latest-broadcast GET on the same path. Free, no payment: GET /feeds and " +
         "GET /health.",
+      "x-post-oracle-quickstart":
+        "Raw-HTTP buy of a POST oracle (address-reputation) — two requests:\n\n" +
+        "# 1) Unpaid POST -> 402 with the challenge in the `payment-required` response header\n" +
+        "curl -sD - -X POST https://x402.payperbyte.io/feeds/address-reputation \\\n" +
+        "  -H 'content-type: application/json' \\\n" +
+        "  -d '{\"domain\":\"example.com\",\"address\":\"0x1234...abcd\"}'\n\n" +
+        "# 2) Pay the challenge with an x402 client (it signs an EIP-3009 USDC\n" +
+        "#    transferWithAuthorization), then replay the SAME POST with the signed\n" +
+        "#    payload in the `X-PAYMENT` request header:\n" +
+        "curl -s -X POST https://x402.payperbyte.io/feeds/address-reputation \\\n" +
+        "  -H 'content-type: application/json' \\\n" +
+        "  -H 'X-PAYMENT: <base64 payment payload from the x402 client>' \\\n" +
+        "  -d '{\"domain\":\"example.com\",\"address\":\"0x1234...abcd\"}'\n\n" +
+        "The paid 200 returns {answer, attestation, broadcast} plus an X-BYTE-Attestation " +
+        "response header; the settlement tx is in X-PAYMENT-RESPONSE. Verify before acting: " +
+        "recompute keccak256(body) === attestation.payloadHash AND recover the signer == the " +
+        "attester from GET /.well-known/agent.json .receipt.attester. The x402 client does the " +
+        "signing — see @payperbyte/sdk GatewayClient, or any x402 v2 client.",
     },
     servers: [{ url: "https://x402.payperbyte.io" }],
     // x402 payment is the auth scheme for every paid operation. Declared as an
-    // OpenAPI http "bearer" scheme whose bearer is the x402 settlement receipt:
+    // OpenAPI apiKey-in-header scheme (the x402 v2 `X-PAYMENT` request header) —
+    // NOT http/bearer, which would make codegen emit a broken Authorization stub:
     // an unpaid request returns 402 with the payment challenge in the
     // `payment-required` header (x402 v2), the client pays the quoted USDC over
     // x402, and retries with the receipt. `x-payment-info` per operation carries
@@ -1174,18 +1343,26 @@ export function buildOpenApiDoc() {
     },
     components: {
       securitySchemes: {
+        // x402 is NOT a static credential. Declared as apiKey-in-header (the
+        // x402 v2 `X-PAYMENT` request header) rather than http/bearer — an
+        // http/bearer scheme makes OpenAPI codegen emit a non-functional
+        // `Authorization: Bearer <token>` stub that never satisfies the gateway.
+        // apiKey-in-header makes codegen emit a settable `X-PAYMENT` header param,
+        // which is the actual on-the-wire shape the agent populates per request.
         x402Payment: {
-          type: "http",
-          scheme: "bearer",
-          bearerFormat: "x402-settlement-receipt",
+          type: "apiKey",
+          in: "header",
+          name: "X-PAYMENT",
           description:
-            "x402 pay-per-call. An unpaid request returns HTTP 402 with the " +
-            "payment challenge in the `payment-required` header (x402 v2). Pay " +
-            `the quoted USDC on ${networkInfo().label} (network ${config.network}) via an ` +
-            "x402 client, then retry with the settlement receipt. No API key — " +
-            "a wallet signs an EIP-3009 `transferWithAuthorization` and the " +
-            "facilitator settles on-chain. See the per-operation `x-payment-info` " +
-            "for the exact price.",
+            "x402 pay-per-call — NOT a static API key. An unpaid request returns " +
+            "HTTP 402 with the payment challenge in the `payment-required` response " +
+            "header (x402 v2). An x402 client pays the quoted USDC on " +
+            `${networkInfo().label} (network ${config.network}) — a wallet signs an ` +
+            "EIP-3009 `transferWithAuthorization` and the facilitator settles " +
+            "on-chain — then encodes the signed payment payload and retries with it " +
+            "in the `X-PAYMENT` request header. The settlement result returns in the " +
+            "`X-PAYMENT-RESPONSE` header. See the per-operation `x-payment-info` for " +
+            "the exact price.",
         },
       },
       schemas: {
@@ -1193,6 +1370,10 @@ export function buildOpenApiDoc() {
         DefiYieldsResponse: defiYieldsSchema,
         ByteLibraryFeedResponse: byteLibraryFeedSchema,
         SyncOracleResponse: syncOracleResponseSchema,
+        RuntimeEolResponse: runtimeEolResponseSchema,
+        ThreatIntelResponse: threatIntelResponseSchema,
+        EvidencePackResponse: evidencePackResponseSchema,
+        UscStatuteResponse: uscStatuteResponseSchema,
         AddressReputationResponse: addressReputationResponseSchema,
         PkgVerdictResponse: pkgVerdictResponseSchema,
         SanctionsScreenResponse: sanctionsScreenResponseSchema,
