@@ -796,7 +796,7 @@ app.get("/feeds/defi-yields", async (_req, res) => {
     const data = await fetchDefiYields();
     await sendAttested(res, data);
   } catch (err: any) {
-    res.status(502).json({ error: "Failed to fetch DeFi yield data", detail: err.message });
+    res.status(502).json({ error: "Failed to fetch DeFi yield data", detail: "upstream unavailable" });
   }
 });
 
@@ -823,7 +823,7 @@ app.post("/feeds/evidence-pack", async (req, res) => {
       res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
     }
   } catch (err: any) {
-    res.status(502).json({ error: "evidence-pack proxy failed", detail: err.message });
+    res.status(502).json({ error: "evidence-pack proxy failed", detail: "upstream unavailable" });
   }
 });
 
@@ -855,7 +855,7 @@ app.post("/feeds/usc-statute", async (req, res) => {
       res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
     }
   } catch (err: any) {
-    res.status(502).json({ error: "usc-statute proxy failed", detail: err.message });
+    res.status(502).json({ error: "usc-statute proxy failed", detail: "upstream unavailable" });
   }
 });
 
@@ -888,7 +888,7 @@ app.post("/feeds/address-reputation", async (req, res) => {
       res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
     }
   } catch (err: any) {
-    res.status(502).json({ error: "address-reputation proxy failed", detail: err.message });
+    res.status(502).json({ error: "address-reputation proxy failed", detail: "upstream unavailable" });
   }
 });
 
@@ -916,7 +916,7 @@ app.post("/feeds/pkg-verdict", async (req, res) => {
       res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
     }
   } catch (err: any) {
-    res.status(502).json({ error: "pkg-verdict proxy failed", detail: err.message });
+    res.status(502).json({ error: "pkg-verdict proxy failed", detail: "upstream unavailable" });
   }
 });
 
@@ -942,7 +942,7 @@ app.post("/feeds/sanctions-screen", async (req, res) => {
       res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
     }
   } catch (err: any) {
-    res.status(502).json({ error: "sanctions-screen proxy failed", detail: err.message });
+    res.status(502).json({ error: "sanctions-screen proxy failed", detail: "upstream unavailable" });
   }
 });
 
@@ -972,7 +972,7 @@ app.post("/feeds/reasoning-verdict", async (req, res) => {
       res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
     }
   } catch (err: any) {
-    res.status(502).json({ error: "reasoning-verdict proxy failed", detail: err.message });
+    res.status(502).json({ error: "reasoning-verdict proxy failed", detail: "upstream unavailable" });
   }
 });
 
@@ -1002,7 +1002,7 @@ app.post("/feeds/runtime-eol", async (req, res) => {
       res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
     }
   } catch (err: any) {
-    res.status(502).json({ error: "runtime-eol gate proxy failed", detail: err.message });
+    res.status(502).json({ error: "runtime-eol gate proxy failed", detail: "upstream unavailable" });
   }
 });
 
@@ -1032,7 +1032,7 @@ app.post("/feeds/threat-intel", async (req, res) => {
       res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
     }
   } catch (err: any) {
-    res.status(502).json({ error: "threat-intel gate proxy failed", detail: err.message });
+    res.status(502).json({ error: "threat-intel gate proxy failed", detail: "upstream unavailable" });
   }
 });
 
@@ -1081,7 +1081,7 @@ app.post("/feeds/liquidation-stream", async (req, res) => {
       res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
     }
   } catch (err: any) {
-    res.status(502).json({ error: "liquidation-stream proxy failed", detail: err.message });
+    res.status(502).json({ error: "liquidation-stream proxy failed", detail: "upstream unavailable" });
   }
 });
 
@@ -1108,7 +1108,7 @@ app.post("/feeds/positioning-snapshot", async (req, res) => {
       res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
     }
   } catch (err: any) {
-    res.status(502).json({ error: "positioning-snapshot proxy failed", detail: err.message });
+    res.status(502).json({ error: "positioning-snapshot proxy failed", detail: "upstream unavailable" });
   }
 });
 
@@ -1125,7 +1125,7 @@ for (const feed of feedRegistry) {
       // X-BYTE-Attestation: sign the exact bytes we return (verify-before-act).
       await sendAttested(res, data);
     } catch (err: any) {
-      res.status(502).json({ error: `Failed to fetch ${slug}`, detail: err.message });
+      res.status(502).json({ error: `Failed to fetch ${slug}`, detail: "upstream unavailable" });
     }
   });
 }
