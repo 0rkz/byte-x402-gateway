@@ -61,10 +61,12 @@ app.disable("x-powered-by");
 app.use(express.json({ limit: "32kb" }));
 
 // Per-paid-delivery logging. Attach a finish hook to every request; the logger
-// records ONLY successful 200s that carry an X-BYTE-Attestation on a /feeds/<slug>
-// route — the feed-attribution tuple {ts, feed, status, payer, amountUSDC} the
-// revenue watcher joins on. Registered before the payment gate so it sees the
-// final status/headers of every response. Throw-free; never blocks a delivery.
+// records ONLY paid deliveries — a 200 on a /feeds/<slug> route whose x402
+// payment SETTLED (PAYMENT-RESPONSE header present; free broadcasts carry only
+// X-BYTE-Attestation and are skipped) — emitting the attribution tuple
+// {ts, feed, status, payer, amountUSDC, txHash, nonce} the revenue watcher joins
+// on. The finish hook fires after the settle headers are set, so it captures
+// them. Throw-free; never blocks a delivery.
 app.use((req, res, next) => {
   res.on("finish", () => logDelivery(req, res));
   next();
@@ -230,6 +232,63 @@ function isPaidRoute(req: any): boolean {
   );
 }
 
+/** `/feeds/<slug>` (normalized) → slug, else null. */
+function oracleSlug(p: string): string | null {
+  const m = /^\/feeds\/([^/]+)$/.exec(normalizeGatePath(p));
+  return m ? m[1] : null;
+}
+
+/** Keys in `required` that are absent/empty in `body`. Treats undefined, null,
+ *  blank strings, and empty arrays as missing — matching the schemas' own
+ *  minLength/minItems intent (an empty string/array screens/judges NOTHING). */
+function missingRequired(required: string[], body: Record<string, unknown>): string[] {
+  return required.filter((k) => {
+    const v = body[k];
+    if (v === undefined || v === null) return true;
+    if (typeof v === "string" && v.trim() === "") return true;
+    if (Array.isArray(v) && v.length === 0) return true;
+    return false;
+  });
+}
+
+/**
+ * Enforce ONLY a schema's declared contract (`required` / `anyOf`). Returns null
+ * when valid, else a human detail string. Feeds with neither constraint (e.g.
+ * positioning-snapshot) accept {} unchanged — defaults are intentional there.
+ * Deliberately minimal (no full JSON-Schema validator): it closes the "pay to
+ * query nothing" gap without risking false rejects of advertised shapes.
+ */
+function validateOracleBody(
+  schema: Record<string, unknown> | undefined,
+  body: unknown,
+): string | null {
+  if (!schema) return null;
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return "request body must be a JSON object";
+  }
+  const b = body as Record<string, unknown>;
+  // Unconditionally-required fields first (clearest error), then anyOf groups.
+  const required = schema.required as string[] | undefined;
+  if (Array.isArray(required) && required.length > 0) {
+    const missing = missingRequired(required, b);
+    if (missing.length > 0) {
+      return `missing required field(s): ${missing.join(", ")}`;
+    }
+  }
+  const anyOf = schema.anyOf as Array<{ required?: string[] }> | undefined;
+  if (Array.isArray(anyOf) && anyOf.length > 0) {
+    const ok = anyOf.some(
+      (branch) =>
+        missingRequired(Array.isArray(branch.required) ? branch.required : [], b).length === 0,
+    );
+    if (!ok) {
+      const opts = anyOf.map((br) => `(${(br.required ?? []).join(" + ")})`).join(" or ");
+      return `at least one of these field set(s) is required: ${opts}`;
+    }
+  }
+  return null;
+}
+
 /**
  * Build the x402 payment middleware. Returns true on success, false (rather
  * than throwing) if the facilitator is unreachable — so the caller can retry.
@@ -352,6 +411,35 @@ app.use((req, res, next) => {
       detail:
         "x402 payment facilitator is not reachable yet — paid feeds are " +
         "temporarily unavailable. Retry shortly.",
+    });
+  }
+  return next();
+});
+
+// ── POST-oracle request-body validation ────────────────────────────────────
+// Runs AFTER the payment gate, so an unpaid probe still gets its 402 price quote
+// — but a PAID request whose body doesn't satisfy the advertised schema (e.g. an
+// empty {} to sanctions-screen) returns 400. A >=400 response makes the x402
+// middleware CANCEL settlement (see @x402/express:
+//   `if (res.statusCode >= 400) await cancellationDispatcher.cancel(...)`),
+// so the agent is NEVER charged for an unscreenable/unanswerable request. Only
+// each schema's OWN declared contract (required / anyOf) is enforced; feeds with
+// no required field (positioning-snapshot) still accept {}.
+//
+// Scoped to LIVE POST oracles (POST_ORACLES) only — NOT every slug with a schema.
+// A delisted slug (e.g. token-safety) keeps a stale ORACLE_REQUEST_SCHEMAS entry
+// but is served by a 410-Gone stub and is absent from POST_ORACLES; validating it
+// here would shadow that 410 with a 400 and break the deploy-blocking
+// gate-engagement check (which requires delisted routes to answer 404/410).
+app.use((req, res, next) => {
+  if (String(req.method).toUpperCase() !== "POST") return next();
+  const slug = oracleSlug(req.path);
+  if (!slug || !POST_ORACLES.has(slug)) return next();
+  const detail = validateOracleBody(ORACLE_REQUEST_SCHEMAS[slug], req.body);
+  if (detail) {
+    return res.status(400).json({
+      error: "invalid_request_body",
+      detail: `${slug}: ${detail}. See the request schema in GET /openapi.json or the 402 payment-required body.`,
     });
   }
   return next();

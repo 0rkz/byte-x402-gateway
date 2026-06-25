@@ -127,7 +127,12 @@ export const ORACLE_REQUEST_SCHEMAS: Record<string, Record<string, unknown>> = {
       domain: {
         type: "string",
         minLength: 1,
-        description: "The payee's web domain, e.g. \"github.com\". BLOCK if it doesn't resolve or hits the blocklist.",
+        description: "The payee's web domain, e.g. \"github.com\". BLOCK if it doesn't resolve or hits the blocklist. Provide either `domain` or its alias `url`.",
+      },
+      url: {
+        type: "string",
+        minLength: 1,
+        description: "Alias for `domain` — the payee's web domain/URL. Accepted interchangeably with `domain` (provide at least one).",
       },
       address: {
         type: "string",
@@ -145,7 +150,10 @@ export const ORACLE_REQUEST_SCHEMAS: Record<string, Record<string, unknown>> = {
         description: "Chain for the on-chain receiving-address signals (default \"base\" = Base mainnet; \"arbitrum\" = Arbitrum Sepolia testnet).",
       },
     },
-    required: ["domain", "address"],
+    // `address` always required; the domain may be given as `domain` OR `url`
+    // (the upstream accepts either: `body.get("domain") or body.get("url")`).
+    required: ["address"],
+    anyOf: [{ required: ["domain"] }, { required: ["url"] }],
   },
   "pkg-verdict": {
     type: "object",
@@ -187,6 +195,10 @@ export const ORACLE_REQUEST_SCHEMAS: Record<string, Record<string, unknown>> = {
         description: "Optional, informational only — the SDN annex pins addresses to currency symbols; chain never gates a hit.",
       },
     },
+    // At least one screenable subject is required — an empty {} body would screen
+    // NOTHING. The gateway enforces this BEFORE settlement (a 400 cancels the
+    // x402 payment), so an agent is never charged $0.05 for an unscreenable query.
+    anyOf: [{ required: ["address"] }, { required: ["name"] }],
   },
   "liquidation-stream": {
     type: "object",
