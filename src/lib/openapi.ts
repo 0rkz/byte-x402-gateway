@@ -388,9 +388,10 @@ const defiYieldsSchema = {
 
 // address-reputation returns its verdict SYNCHRONOUSLY (not the on-chain ack
 // shape) — { answer, attestation, broadcast }. Two independent receipts ride
-// the paid 200: the embedded `attestation` (the publisher's verdict-level
-// EIP-712 sig over the canonical answer bytes) and the gateway's
-// X-BYTE-Attestation header (byte-integrity receipt over the whole body).
+// the paid 200: the embedded `attestation` (this feed's OWN per-feed EIP-712 sig
+// over the canonical answer bytes — a distinct signer) and the gateway's
+// X-BYTE-Attestation header (delivery-integrity receipt over the whole body,
+// signed by the gateway key).
 const addressReputationResponseSchema = {
   type: "object",
   properties: {
@@ -427,7 +428,7 @@ const addressReputationResponseSchema = {
     attestation: {
       type: "object",
       description:
-        "Publisher's EIP-712 PayloadAttestation over keccak256 of the canonical " +
+        "EIP-712 PayloadAttestation signed by this feed's own per-feed attestation key (recover `attestation.signer` and compare to the feed's published signer — distinct from the gateway X-BYTE-Attestation key; first-party PayPerByte, not an independent third-party publisher, not a correctness guarantee), over keccak256 of the canonical " +
         "(insertion-order, minified) answer bytes. Recompute the hash over `answer` " +
         "AS RECEIVED and recover the signer before acting on the verdict.",
       properties: {
@@ -451,8 +452,9 @@ const addressReputationResponseSchema = {
 };
 
 // pkg-verdict returns its verdict SYNCHRONOUSLY — { answer, attestation, broadcast }.
-// Two independent receipts ride the paid 200: the embedded `attestation` (the publisher's
-// EIP-712 sig over the canonical answer bytes) and the gateway's X-BYTE-Attestation header.
+// Two independent receipts ride the paid 200: the embedded `attestation` (this feed's OWN
+// per-feed EIP-712 sig over the canonical answer bytes) and the gateway's X-BYTE-Attestation
+// header (delivery-integrity, gateway key).
 const pkgVerdictResponseSchema = {
   type: "object",
   properties: {
@@ -491,7 +493,7 @@ const pkgVerdictResponseSchema = {
     attestation: {
       type: "object",
       description:
-        "Publisher's EIP-712 PayloadAttestation over keccak256 of the canonical " +
+        "EIP-712 PayloadAttestation signed by this feed's own per-feed attestation key (recover `attestation.signer` and compare to the feed's published signer — distinct from the gateway X-BYTE-Attestation key; first-party PayPerByte, not an independent third-party publisher, not a correctness guarantee), over keccak256 of the canonical " +
         "(insertion-order, minified) answer bytes. Recompute the hash over `answer` " +
         "AS RECEIVED and recover the signer before acting on the verdict.",
       properties: {
@@ -565,7 +567,7 @@ const sanctionsScreenResponseSchema = {
     attestation: {
       type: "object",
       description:
-        "Publisher's EIP-712 PayloadAttestation over keccak256 of the canonical " +
+        "EIP-712 PayloadAttestation signed by this feed's own per-feed attestation key (recover `attestation.signer` and compare to the feed's published signer — distinct from the gateway X-BYTE-Attestation key; first-party PayPerByte, not an independent third-party publisher, not a correctness guarantee), over keccak256 of the canonical " +
         "(insertion-order, minified) answer bytes. Recompute the hash over `answer` " +
         "AS RECEIVED and recover the signer before acting on the verdict.",
       properties: {
@@ -624,7 +626,7 @@ const tokenSafetyResponseSchema = {
     attestation: {
       type: "object",
       description:
-        "Publisher's EIP-712 PayloadAttestation over keccak256 of the canonical " +
+        "EIP-712 PayloadAttestation signed by this feed's own per-feed attestation key (recover `attestation.signer` and compare to the feed's published signer — distinct from the gateway X-BYTE-Attestation key; first-party PayPerByte, not an independent third-party publisher, not a correctness guarantee), over keccak256 of the canonical " +
         "(insertion-order, minified) answer bytes. Recompute the hash over `answer` " +
         "AS RECEIVED and recover the signer before acting on the verdict.",
       properties: {
@@ -685,7 +687,7 @@ const liquidationStreamResponseSchema = {
     attestation: {
       type: "object",
       description:
-        "Publisher's EIP-712 PayloadAttestation over keccak256 of the canonical " +
+        "EIP-712 PayloadAttestation signed by this feed's own per-feed attestation key (recover `attestation.signer` and compare to the feed's published signer — distinct from the gateway X-BYTE-Attestation key; first-party PayPerByte, not an independent third-party publisher, not a correctness guarantee), over keccak256 of the canonical " +
         "(insertion-order, minified) answer bytes. Recompute the hash over `answer` " +
         "AS RECEIVED and recover the signer before acting on the verdict.",
       properties: {
@@ -754,7 +756,7 @@ const positioningSnapshotResponseSchema = {
     attestation: {
       type: "object",
       description:
-        "Publisher's EIP-712 PayloadAttestation over keccak256 of the canonical " +
+        "EIP-712 PayloadAttestation signed by this feed's own per-feed attestation key (recover `attestation.signer` and compare to the feed's published signer — distinct from the gateway X-BYTE-Attestation key; first-party PayPerByte, not an independent third-party publisher, not a correctness guarantee), over keccak256 of the canonical " +
         "(insertion-order, minified) answer bytes. Recompute the hash over `answer` " +
         "AS RECEIVED and recover the signer before acting on the verdict.",
       properties: {
@@ -806,18 +808,21 @@ function pascal(slug: string): string {
     .join("");
 }
 
-/** The publisher's embedded EIP-712 PayloadAttestation block, shared by the
- *  synchronous oracle responses. Recompute keccak256 over the canonical
- *  (insertion-order, minified) `answer` bytes AS RECEIVED and recover the signer
- *  before acting — the receipt proves provenance + integrity, NOT correctness. */
+/** The embedded EIP-712 PayloadAttestation block, shared by the synchronous oracle
+ *  responses. This is the FEED's OWN per-feed signature (a distinct signer, separate
+ *  from the gateway's X-BYTE-Attestation header key): recompute keccak256 over the
+ *  canonical `answer` bytes AS RECEIVED, recover `attestation.signer`, and compare it
+ *  to the feed's published signer before acting. First-party PayPerByte, NOT correctness. */
 const payloadAttestationSchema = {
   type: "object",
   description:
-    "Publisher's EIP-712 PayloadAttestation over keccak256 of the canonical " +
-    "(insertion-order, minified) answer bytes. Recompute the hash over `answer` " +
-    "AS RECEIVED and recover the signer before acting. Proves provenance + " +
-    "integrity (which publisher signed these exact bytes), NOT that the answer " +
-    "is correct.",
+    "EIP-712 PayloadAttestation signed by THIS feed's own per-feed attestation key " +
+    "(a distinct signer — recover `attestation.signer` and compare it to the feed's " +
+    "published signer address; SEPARATE from the gateway's X-BYTE-Attestation header " +
+    "key). Computed over keccak256 of the canonical (insertion-order, minified) answer " +
+    "bytes — recompute the hash over `answer` AS RECEIVED and recover the signer before " +
+    "acting. First-party PayPerByte (not an independent third-party publisher), and NOT " +
+    "a correctness guarantee.",
   properties: {
     payloadHash: { type: "string" },
     payloadLength: { type: "integer" },
@@ -846,11 +851,11 @@ const broadcastDisabledSchema = {
  * on-chain ACK and no `request_id`/`est_eta_ms`. The decision oracles
  * (runtime-eol, threat-intel) put a signed ALLOW/WARN/BLOCK/ABSTAIN verdict in
  * `answer`; the data oracles (usc-statute statute text, evidence-pack citation
- * bundle) put their feed-shaped payload there. `attestation` is the publisher's
- * EIP-712 receipt over the canonical answer bytes (present when the upstream
- * signs; usc-statute carries no embedded receipt and relies on the gateway's
- * X-BYTE-Attestation response header instead). The receipt proves provenance +
- * integrity, NOT correctness.
+ * bundle) put their feed-shaped payload there. `attestation` is this feed's OWN
+ * per-feed EIP-712 receipt over the canonical answer bytes — a distinct signer,
+ * recover `attestation.signer` (present when the upstream signs; usc-statute carries
+ * no embedded receipt and relies on the gateway's X-BYTE-Attestation response header
+ * instead). First-party PayPerByte, NOT correctness.
  */
 const syncOracleResponseSchema = {
   type: "object",
@@ -1165,9 +1170,11 @@ export function buildOpenApiDoc() {
         "PayloadAttestation provenance-stamped — covering crypto markets, DeFi " +
         "yields, weather, earthquakes, news, code-pulse, threat-intel, address " +
         "reputation, sanctions screening, and supply-chain verdicts. The " +
-        "attestation proves authenticity and tamper-evidence — which publisher " +
-        "signed these exact bytes — NOT the correctness of the underlying data " +
-        "or any verdict. " +
+        "attestation proves DELIVERY-INTEGRITY — these are exactly the bytes the " +
+        "PayPerByte gateway served and attested under the BYTE Library domain — " +
+        "NOT that an independent data publisher signed them (per-publisher " +
+        "provenance is opt-in/roadmap), and NOT the correctness of the underlying " +
+        "data or any verdict. " +
         "Pay per call in USDC over x402 with no API keys — a " +
         "wallet, not a secret on the box. Settlement is on " +
         `${networkInfo().label} (${config.network}). Price is per-feed, derived from expected ` +
@@ -1202,10 +1209,16 @@ export function buildOpenApiDoc() {
         "  -H 'X-PAYMENT: <base64 payment payload from the x402 client>' \\\n" +
         "  -d '{\"domain\":\"example.com\",\"address\":\"0x1234...abcd\"}'\n\n" +
         "The paid 200 returns {answer, attestation, broadcast} plus an X-BYTE-Attestation " +
-        "response header; the settlement tx is in X-PAYMENT-RESPONSE. Verify before acting: " +
-        "recompute keccak256(body) === attestation.payloadHash AND recover the signer == the " +
-        "attester from GET /.well-known/agent.json .receipt.attester. The x402 client does the " +
-        "signing — see @payperbyte/sdk GatewayClient, or any x402 v2 client.",
+        "response header; the settlement tx is in X-PAYMENT-RESPONSE. There are TWO independent " +
+        "receipts — verify before acting:\n" +
+        "  (1) GATEWAY header (delivery-integrity, on every paid 200): parse X-BYTE-Attestation, " +
+        "recompute keccak256(responseBody) === header.payloadHash, AND recover the header signer == " +
+        "the attester from GET /.well-known/agent.json .receipt.attester.\n" +
+        "  (2) EMBEDDED body `attestation` (per-feed provenance, on the verdict oracles): recompute " +
+        "keccak256(canonical(answer)) === attestation.payloadHash, AND recover attestation.signer == " +
+        "the feed's OWN published signer (a distinct per-feed key — NOT the gateway attester).\n" +
+        "The x402 client does the payment signing — see @payperbyte/sdk verifyFromGatewayResponse / " +
+        "GatewayClient, or any x402 v2 client.",
     },
     servers: [{ url: "https://x402.payperbyte.io" }],
     // x402 payment is the auth scheme for every paid operation. Declared as an
