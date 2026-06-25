@@ -38,7 +38,7 @@ const POST_ORACLE_IDS = new Set(["evidence-pack", "usc-statute", "address-reputa
 /** Per-oracle request-body schema, keyed by feed id. Each oracle takes a
  *  different question/claim/citation field plus optional on-chain delivery
  *  binding. Used to emit a correct requestBody for every POST operation. */
-const ORACLE_REQUEST_SCHEMAS: Record<string, object> = {
+export const ORACLE_REQUEST_SCHEMAS: Record<string, Record<string, unknown>> = {
   "reasoning-verdict": {
     type: "object",
     properties: {
@@ -50,6 +50,34 @@ const ORACLE_REQUEST_SCHEMAS: Record<string, object> = {
       },
     },
     required: ["subject"],
+  },
+  "runtime-eol": {
+    type: "object",
+    properties: {
+      product: {
+        type: "string",
+        minLength: 1,
+        description: 'Runtime/product name (endoflife.date identifier), e.g. "nodejs", "python", "ubuntu".',
+      },
+      version: {
+        type: "string",
+        minLength: 1,
+        description: 'The version/cycle to judge, e.g. "18" or "3.9". Returns a signed supported-vs-EOL verdict as of now.',
+      },
+    },
+    required: ["product", "version"],
+  },
+  "threat-intel": {
+    type: "object",
+    properties: {
+      components: {
+        type: "array",
+        items: { type: "string", minLength: 1 },
+        minItems: 1,
+        description: 'Product/vendor/package names or CVE ids to screen against the CISA KEV catalog, e.g. ["log4j", "CVE-2021-44228"].',
+      },
+    },
+    required: ["components"],
   },
   "evidence-pack": {
     type: "object",

@@ -14,7 +14,7 @@ import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient, type FacilitatorConfig } from "@x402/core/server";
 import { config, feedRegistry, DISCLAIMER_TEXT, networkInfo } from "./lib/config.js";
-import { buildOpenApiDoc } from "./lib/openapi.js";
+import { buildOpenApiDoc, ORACLE_REQUEST_SCHEMAS } from "./lib/openapi.js";
 import { fetchDefiYields } from "./feeds/defi.js";
 import { fetchLatestPublisherPayload } from "./feeds/generic.js";
 import {
@@ -148,7 +148,9 @@ function getExtensions(feedId: string, isPost: boolean): Record<string, unknown>
   if (isPost) {
     return declareDiscoveryExtension({
       bodyType: "json",
-      input: {},
+      // Advertise the real request body schema in the 402 Bazaar challenge so an
+      // agent knows what to POST (was hardcoded {} → agents paid then 400'd blind).
+      input: ORACLE_REQUEST_SCHEMAS[feedId] ?? {},
       output: { example: { feed: feedId } },
     });
   }
