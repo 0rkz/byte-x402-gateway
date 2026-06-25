@@ -308,6 +308,30 @@ async function setupPaymentMiddlewareWithRetry(): Promise<void> {
 // endpoints from starting.
 setupPaymentMiddlewareWithRetry().catch(() => {});
 
+// HEAD payment-bypass guard — MUST precede the payment gate AND the routes.
+// Express maps HEAD→GET at the router, but the x402 paymentMiddleware only gates
+// the exact GET/POST method keys (paymentRoutes), so a HEAD on a paid feed skips
+// payment yet still runs the GET handler — emitting a signed X-BYTE-Attestation
+// receipt + content-length for FREE on all GET feeds. 405 HEAD on any paid
+// resource so a receipt is NEVER produced without payment. Free routes (catalog,
+// health, well-known) are not in paymentRoutes and pass through untouched.
+app.use((req, res, next) => {
+  if (req.method === "HEAD") {
+    const p = normalizeGatePath(req.path);
+    const methods = ["GET", "POST"].filter((m) => paymentRoutes[`${m} ${p}`]);
+    if (methods.length > 0) {
+      res.setHeader("Allow", methods.join(", "));
+      return res.status(405).json({
+        error: "method_not_allowed",
+        detail:
+          "HEAD is not supported on paid feed routes — it would leak a signed " +
+          "receipt without payment. Use a paid GET/POST.",
+      });
+    }
+  }
+  return next();
+});
+
 // Payment gate — MUST be registered before any route so Express runs it first.
 //   middleware ready       -> delegate to the real x402 payment middleware
 //   not ready + paid route -> 503 FAIL CLOSED (never serve paid data free)
