@@ -247,6 +247,20 @@ function paymentInfo(priceAtomic: string) {
 }
 
 /** Responses block for a paid operation. The 402 description embeds the price. */
+/** Structured error body the gateway returns (matches the runtime error handler):
+ *  { error: <machine code>, detail?: <human> }. No stack/path is ever included. */
+const ERROR_SCHEMA = {
+  type: "object",
+  properties: {
+    error: {
+      type: "string",
+      description: "Machine-readable code, e.g. invalid_json, payload_too_large, method_not_allowed.",
+    },
+    detail: { type: "string", description: "Human-readable explanation (no stack trace / path)." },
+  },
+  required: ["error"],
+};
+
 function paidResponses(okSchema: object, priceAtomic: string) {
   const usd = (Number(priceAtomic) / 1_000_000).toFixed(6);
   return {
@@ -254,10 +268,18 @@ function paidResponses(okSchema: object, priceAtomic: string) {
       description: "Successful response",
       content: { "application/json": { schema: okSchema } },
     },
+    "400": {
+      description: "Bad Request — malformed JSON body (POST oracles).",
+      content: { "application/json": { schema: ERROR_SCHEMA } },
+    },
     "402": {
       description:
         `Payment Required — pay the x402 challenge in the payment-required ` +
         `header (x402 v2) and retry. $${usd} USDC on ${networkInfo().label}.`,
+    },
+    "413": {
+      description: "Payload Too Large — request body exceeds the 32 KB limit.",
+      content: { "application/json": { schema: ERROR_SCHEMA } },
     },
     "502": { description: "Upstream data source unavailable" },
   };
