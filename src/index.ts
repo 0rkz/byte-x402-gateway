@@ -14,7 +14,7 @@ import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient, type FacilitatorConfig } from "@x402/core/server";
 import { config, feedRegistry, DISCLAIMER_TEXT, networkInfo } from "./lib/config.js";
-import { buildOpenApiDoc, ORACLE_REQUEST_SCHEMAS } from "./lib/openapi.js";
+import { buildOpenApiDoc, ORACLE_REQUEST_SCHEMAS, ORACLE_REQUEST_EXAMPLES } from "./lib/openapi.js";
 import { fetchDefiYields } from "./feeds/defi.js";
 import { fetchLatestPublisherPayload } from "./feeds/generic.js";
 import {
@@ -150,9 +150,15 @@ function getExtensions(feedId: string, isPost: boolean): Record<string, unknown>
   if (isPost) {
     return declareDiscoveryExtension({
       bodyType: "json",
-      // Advertise the real request body schema in the 402 Bazaar challenge so an
-      // agent knows what to POST (was hardcoded {} → agents paid then 400'd blind).
-      input: ORACLE_REQUEST_SCHEMAS[feedId] ?? {},
+      // Advertise the real request body in the 402 Bazaar challenge so an agent
+      // knows what to POST (was hardcoded {} → agents paid then 400'd blind).
+      // `input` → bazaar.info.input.body must be a concrete EXAMPLE (it is
+      // validated AGAINST the schema; a schema-object-as-example fails its own
+      // schema and strict Bazaar/CDP validators then DROP the oracle). `inputSchema`
+      // → bazaar.schema.input.body is the MACHINE-READABLE JSON Schema. Both must
+      // be populated and mutually consistent.
+      input: ORACLE_REQUEST_EXAMPLES[feedId] ?? {},
+      inputSchema: ORACLE_REQUEST_SCHEMAS[feedId] ?? { properties: {} },
       output: { example: { feed: feedId } },
     });
   }
@@ -287,6 +293,20 @@ function validateOracleBody(
     }
   }
   return null;
+}
+
+/** The HTTP verb(s) a feed accepts, as a display string ("GET", "POST", or
+ *  "POST, GET" for dual-pattern feeds) — mirrors the live paymentRoutes logic
+ *  (POST iff a POST oracle; GET iff publisher-backed broadcast OR bespoke
+ *  non-oracle) so the /feeds catalog tells a dev which method to use without
+ *  guessing. Self-contained (POST_ORACLES + publisher) — no external deps. */
+function feedMethods(feed: { id: string; publisher?: string }): string {
+  const ms: string[] = [];
+  const isOracle = POST_ORACLES.has(feed.id);
+  // GET first to match the 405 `Allow` header ordering (GET, POST).
+  if (feed.publisher || !isOracle) ms.push("GET");
+  if (isOracle) ms.push("POST");
+  return ms.join(", ");
 }
 
 /**
@@ -489,7 +509,11 @@ app.get("/feeds", (_req, res) => {
       note: "Every feed response carries X-BYTE-Disclaimer-Category. Render legal framing accordingly. Disclaimer text is also embedded in the signed payload for new Tier 1 publishers; existing publishers carry it via the header until the post-Ari batch upgrade.",
       text: DISCLAIMER_TEXT,
     },
-    feeds: feedRegistry,
+    // Each entry carries `method` — the HTTP verb(s) the feed accepts ("GET",
+    // "POST", or "POST, GET" for dual-pattern feeds) — so a dev knows which verb
+    // to use without guessing (a GET to a POST oracle now 405s with the right verb,
+    // not a circular 404).
+    feeds: feedRegistry.map((f) => ({ ...f, method: feedMethods(f) })),
   });
 });
 
@@ -1028,6 +1052,21 @@ for (const feed of feedRegistry) {
 // and forget the /feeds/ prefix (GET /defi-yields) land here; point them at the
 // real paid path. Registered after all routes, before the error handler.
 app.use((req, res) => {
+  // Method-mismatch on a known feed PATH → 405 (not a circular 404). E.g. a GET
+  // to a POST-only oracle: tell the dev exactly which verb(s) the path accepts
+  // instead of 404-pointing at the same path they just tried. Uses the live
+  // paymentRoutes map so it stays in lockstep with the gated routes. (HEAD is
+  // already 405'd upstream; delisted slugs aren't in paymentRoutes so they keep
+  // their 404/410.)
+  const np = normalizeGatePath(req.path);
+  const allowed = ["GET", "POST"].filter((m) => paymentRoutes[`${m} ${np}`]);
+  if (allowed.length > 0 && !allowed.includes(String(req.method).toUpperCase())) {
+    res.setHeader("Allow", allowed.join(", "));
+    return res.status(405).json({
+      error: "method_not_allowed",
+      detail: `${req.path} requires ${allowed.join(" or ")} — you used ${req.method}. See /openapi.json for the request contract.`,
+    });
+  }
   const slug = req.path.replace(/^\/+/, "").replace(/\/+$/, "").toLowerCase();
   const known = feedRegistry.some((f) => f.id === slug);
   res.status(404).json({

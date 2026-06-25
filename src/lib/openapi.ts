@@ -146,8 +146,8 @@ export const ORACLE_REQUEST_SCHEMAS: Record<string, Record<string, unknown>> = {
       },
       chain: {
         type: "string",
-        enum: ["base", "arbitrum"],
-        description: "Chain for the on-chain receiving-address signals (default \"base\" = Base mainnet; \"arbitrum\" = Arbitrum Sepolia testnet).",
+        enum: ["base", "arbitrum-one"],
+        description: "Mainnet for the on-chain receiving-address signals (default \"base\" = Base mainnet; \"arbitrum-one\" = Arbitrum One mainnet). Mainnets only — a testnet returns meaningless zeros for a real payee. (The Arbitrum Sepolia testnet is opt-in dev-only via ADDRESS_REP_ENABLE_TESTNET as chain \"arbitrum-sepolia\", and is intentionally not advertised here.)",
       },
     },
     // `address` always required; the domain may be given as `domain` OR `url`
@@ -244,6 +244,25 @@ export const ORACLE_REQUEST_SCHEMAS: Record<string, Record<string, unknown>> = {
     },
     required: ["token"],
   },
+};
+
+/** Per-oracle EXAMPLE request body — a concrete, schema-valid payload an agent can
+ *  copy. This is distinct from ORACLE_REQUEST_SCHEMAS (the JSON Schema): the Bazaar
+ *  extension puts the EXAMPLE in `info.input.body` (human/sample) and the SCHEMA in
+ *  `schema.input.body` (machine). Reusing the schema object as the example makes the
+ *  example fail its own schema, so a strict Bazaar/CDP validator drops the oracle —
+ *  hence a real example per oracle. Each satisfies its schema's required/anyOf. */
+export const ORACLE_REQUEST_EXAMPLES: Record<string, Record<string, unknown>> = {
+  "reasoning-verdict": { subject: "Release 5,000 USDC to 0x1111111111111111111111111111111111111111 for invoice #42?" },
+  "runtime-eol": { product: "nodejs", version: "18" },
+  "threat-intel": { components: ["log4j", "CVE-2021-44228"] },
+  "evidence-pack": { claim: "USDC is fully reserved 1:1" },
+  "usc-statute": { citation: "17 USC 107" },
+  "address-reputation": { domain: "example.com", address: "0x1111111111111111111111111111111111111111" },
+  "pkg-verdict": { ecosystem: "npm", package: "left-pad" },
+  "sanctions-screen": { address: "0x1111111111111111111111111111111111111111" },
+  "liquidation-stream": { asset: "BTC" },
+  "positioning-snapshot": { assets: ["BTC", "ETH"] },
 };
 
 /** Per-feed x-payment-info block — price varies by expected payload size. */
