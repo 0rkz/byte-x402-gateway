@@ -50,6 +50,9 @@ const app = express();
 // `true` (trust all) and correct for our single-cloudflared topology.
 app.set("trust proxy", 1);
 
+// Don't advertise the framework (no `X-Powered-By: Express` header).
+app.disable("x-powered-by");
+
 // JSON body parsing for the POST oracle proxies. @x402/express documents that
 // it requires express.json(); without it req.body is undefined and every
 // oracle proxy silently forwarded `{}` upstream regardless of what the agent
@@ -926,6 +929,34 @@ for (const feed of feedRegistry) {
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// Error handler — MUST be the last middleware (4-arg signature). Without it,
+// express.json() body errors hit Express's default handler, which leaks an HTML
+// stack trace incl. the absolute path /home/orkz/byte/x402-gateway/... Return a
+// structured JSON error with NO path/stack: malformed JSON → 400, oversized body
+// → 413, everything else → 500. (eslint-disable: the unused `next` is required
+// to mark this as a 4-arg Express error handler.)
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (res.headersSent) return;
+  const type = err?.type;
+  if (err instanceof SyntaxError || type === "entity.parse.failed") {
+    return res.status(400).json({
+      error: "invalid_json",
+      detail: "Request body is not valid JSON.",
+    });
+  }
+  if (type === "entity.too.large" || err?.status === 413 || err?.statusCode === 413) {
+    return res.status(413).json({
+      error: "payload_too_large",
+      detail: "Request body exceeds the 32 KB limit.",
+    });
+  }
+  // Never echo err.message/stack (path-leak class). Generic, opaque 500.
+  console.error(`[x402-gateway] unhandled error: ${err instanceof Error ? err.message : err}`);
+  return res.status(500).json({ error: "internal_error" });
+});
 
 // ---------------------------------------------------------------------------
 // Start
