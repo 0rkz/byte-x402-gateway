@@ -11,7 +11,7 @@
  *     npx tsx test/pay_reasoning_verdict.ts
  *
  * Asserts on the paid 200: X-BYTE-Attestation header present + verifies + recovers
- * to the publisher; answer.schema == reasoning-verdict/v1; verdict ∈ enum; the
+ * to the publisher; answer.v == reasoning-verdict/v1; verdict ∈ enum; the
  * embedded attestation verifies over the EXACT answer bytes. Free-only (no key) just
  * checks the route is listed + 402s.
  */
@@ -134,7 +134,7 @@ async function main() {
   }
 
   const resp = JSON.parse(raw);
-  check("answer.schema == reasoning-verdict/v1", resp?.answer?.schema === "reasoning-verdict/v1");
+  check("answer.v == reasoning-verdict/v1", resp?.answer?.v === "reasoning-verdict/v1");
   check("answer.verdict ∈ ALLOW/WARN/BLOCK/ABSTAIN", ["ALLOW", "WARN", "BLOCK", "ABSTAIN"].includes(resp?.answer?.verdict), `got ${resp?.answer?.verdict}`);
   console.log(`        verdict: ${resp?.answer?.verdict} (score ${resp?.answer?.score}) — ${resp?.answer?.summary ?? ""}`);
 

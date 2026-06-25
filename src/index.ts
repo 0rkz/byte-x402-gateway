@@ -53,6 +53,24 @@ app.set("trust proxy", 1);
 // Don't advertise the framework (no `X-Powered-By: Express` header).
 app.disable("x-powered-by");
 
+// Canonicalize a trailing slash on /feeds/<slug>/ → /feeds/<slug>. @x402 builds
+// the 402 challenge's `resource.url` from `req.originalUrl`, so a trailing-slash
+// request would advertise a NON-canonical resource.url (…/feeds/slug/) that
+// differs from the path in openapi.json / agent.json — a strict x402 client's
+// resource-binding check then rejects the challenge. Rewrite req.url +
+// req.originalUrl so routing AND the challenge are canonical. (A rewrite, NOT a
+// 301 — a redirect would break the POST-with-payment replay.) Must precede the
+// payment gate. The bare catalog `/feeds/` is left alone (no slug to canonicalize).
+app.use((req, _res, next) => {
+  const m = /^(\/feeds\/[^/?#]+)\/+(\?.*)?$/.exec(req.url);
+  if (m) {
+    const canonical = m[1] + (m[2] ?? "");
+    req.url = canonical;
+    (req as unknown as { originalUrl: string }).originalUrl = canonical;
+  }
+  next();
+});
+
 // JSON body parsing for the POST oracle proxies. @x402/express documents that
 // it requires express.json(); without it req.body is undefined and every
 // oracle proxy silently forwarded `{}` upstream regardless of what the agent

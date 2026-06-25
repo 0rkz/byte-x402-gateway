@@ -885,7 +885,7 @@ const reasoningVerdictResponseSchema = {
     answer: {
       type: "object",
       properties: {
-        schema: { const: "reasoning-verdict/v1" },
+        v: { const: "reasoning-verdict/v1" },
         kind: {
           type: "string",
           enum: ["payee", "transaction", "contract", "message", "proposal", "tool-call", "url", "claim", "general"],
@@ -909,7 +909,7 @@ const reasoningVerdictResponseSchema = {
           description: "Honesty notice signed into the bytes: the receipt proves these exact bytes came from this publisher; it does NOT guarantee the verdict is correct. AI-generated advisory analysis — verify independently before acting.",
         },
       },
-      required: ["schema", "kind", "subject", "verdict", "score", "summary", "reasons", "confidence", "model", "ruleset", "ts", "disclaimer"],
+      required: ["v", "kind", "subject", "verdict", "score", "summary", "reasons", "confidence", "model", "ruleset", "ts", "disclaimer"],
     },
     attestation: payloadAttestationSchema,
     broadcast: broadcastDisabledSchema,
