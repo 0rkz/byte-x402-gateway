@@ -505,6 +505,10 @@ app.get("/.well-known/agent.json", (_req, res) => {
       id: feed.id,
       name: feed.name,
       description: feed.description,
+      // Full URL + verb so an agent self-routes correctly — the bare id alone
+      // (e.g. "defi-yields") would 404; the paid resource is at /feeds/<slug>.
+      url: `https://x402.payperbyte.io${feed.endpoint}`,
+      method: POST_ORACLES.has(feed.id) ? "POST" : "GET",
       tags: [feed.disclaimerCategory, "x402", "usdc", net.chain],
     })),
     endpoints: {
@@ -929,6 +933,20 @@ for (const feed of feedRegistry) {
     }
   });
 }
+
+// 404 — structured, with a /feeds/ hint. Agents that read agent.json skill ids
+// and forget the /feeds/ prefix (GET /defi-yields) land here; point them at the
+// real paid path. Registered after all routes, before the error handler.
+app.use((req, res) => {
+  const slug = req.path.replace(/^\/+/, "").replace(/\/+$/, "").toLowerCase();
+  const known = feedRegistry.some((f) => f.id === slug);
+  res.status(404).json({
+    error: "not_found",
+    detail: known
+      ? `No route at ${req.path}. This feed is served at /feeds/${slug} (paid x402).`
+      : `No route at ${req.path}. Browse the catalog at /feeds; each feed is served at /feeds/<slug>.`,
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Error handler — MUST be the last middleware (4-arg signature). Without it,
