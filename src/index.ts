@@ -608,6 +608,43 @@ function attestationReceiptBlock() {
       "in USDC on Base mainnet (eip155:8453); no funds move on testnet. The chainId is a " +
       "consensus constant: it stays 421614 regardless of where you pay, so every receipt " +
       "verifies against the same domain. (Mainnet re-anchoring is audit-gated.)",
+    // SECOND receipt — LIVE per-feed provenance, machine-discoverable. The
+    // eip712-attested feeds each have their OWN distinct per-feed signer key (a
+    // SEPARATE signer from the gateway `attester` above). `signers` maps feed id →
+    // that feed's signer address (the on-chain-registered publisher key). First-party
+    // PayPerByte, not an independent third-party data source, not correctness.
+    embedded: {
+      scheme: "EIP712-PayloadAttestation",
+      domain: attestationDomain(),
+      // HOW the per-feed signature is recovered depends on the feed shape:
+      verify: {
+        // GET publisher feeds (provenance:eip712-attested): the per-feed signature
+        // is anchored ON-CHAIN — the HTTP body carries `publisher`+`payloadHash`+`txHash`
+        // (no signature field); recover the publisher's PayloadAttestation from the
+        // BroadcastStreamed event at responseBody.txHash.
+        broadcast:
+          "recover the publisher's EIP-712 PayloadAttestation from the on-chain " +
+          "BroadcastStreamed event at responseBody.txHash; confirm responseBody.publisher " +
+          "=== signers[feed] and responseBody.payloadHash matches the broadcast.",
+        // POST verdict oracles: the signature is EMBEDDED in the response body's
+        // `attestation` object — recover it directly.
+        oracle:
+          "recompute keccak256(canonical(answer)) === attestation.payloadHash AND " +
+          "recoverTypedDataAddress(domain, {PayloadAttestation}, message, attestation.signature) " +
+          "=== attestation.signer (the feed's own per-feed key — NOT the gateway attester).",
+      },
+      note:
+        "A distinct per-feed key, separate from the gateway X-BYTE-Attestation header. " +
+        "First-party PayPerByte (not an independent third-party data source), NOT a " +
+        "correctness guarantee. `signers` lists the on-chain publisher key per attested " +
+        "feed; feeds absent from it carry only the gateway header receipt (the POST verdict " +
+        "oracles among them additionally embed their own `attestation` in the body).",
+      signers: Object.fromEntries(
+        feedRegistry
+          .filter((f) => f.provenance === "eip712-attested" && f.publisher)
+          .map((f) => [f.id, f.publisher]),
+      ),
+    },
   };
 }
 
@@ -640,6 +677,10 @@ function buildX402Manifest() {
       description: feed.description,
       category: feed.disclaimerCategory,
       provenance: feed.provenance,
+      // Per-feed publisher signer — for these eip712-attested GET feeds the
+      // signature is anchored ON-CHAIN (recover the publisher's PayloadAttestation
+      // from the broadcast at the body's txHash), NOT embedded in the response body.
+      ...(feed.provenance === "eip712-attested" && feed.publisher ? { signer: feed.publisher } : {}),
       price: feed.price,
       accepts: buildAccepts(feed.priceAtomic),
       metadata: {
@@ -702,6 +743,9 @@ app.get("/.well-known/agent.json", (_req, res) => {
       // (e.g. "defi-yields") would 404; the paid resource is at /feeds/<slug>.
       url: `https://x402.payperbyte.io${feed.endpoint}`,
       method: feedMethodValue(feed),
+      // Per-feed publisher signer (eip712-attested feeds) — anchored ON-CHAIN,
+      // recover from the broadcast at the body's txHash; not embedded in the body.
+      ...(feed.provenance === "eip712-attested" && feed.publisher ? { signer: feed.publisher } : {}),
       tags: [feed.disclaimerCategory, "x402", "usdc", net.chain],
     })),
     endpoints: {

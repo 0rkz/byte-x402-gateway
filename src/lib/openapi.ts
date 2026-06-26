@@ -1205,6 +1205,9 @@ export function buildOpenApiDoc() {
   const liquidationStream = feed("liquidation-stream");
   const positioningSnapshot = feed("positioning-snapshot");
   const reasoningVerdict = feed("reasoning-verdict");
+  // Feeds whose payload itself carries a LIVE per-feed EIP-712 attestation (a
+  // distinct per-feed signer) — drives the honest "live per-feed provenance" claim.
+  const attestedCount = feedRegistry.filter((f) => f.provenance === "eip712-attested").length;
 
   return {
     openapi: "3.1.0",
@@ -1212,16 +1215,22 @@ export function buildOpenApiDoc() {
       title: "PayPerByte x402 Gateway",
       version: "0.3.0",
       description:
-        "Cryptographically attested, provenance-verifiable data feeds for AI " +
-        "agents. Every payload is cryptographically signed and EIP-712 " +
-        "PayloadAttestation provenance-stamped — covering crypto markets, DeFi " +
-        "yields, weather, earthquakes, news, code-pulse, threat-intel, address " +
-        "reputation, sanctions screening, and supply-chain verdicts. The " +
-        "attestation proves DELIVERY-INTEGRITY — these are exactly the bytes the " +
-        "PayPerByte gateway served and attested under the BYTE Library domain — " +
-        "NOT that an independent data publisher signed them (per-publisher " +
-        "provenance is opt-in/roadmap), and NOT the correctness of the underlying " +
-        "data or any verdict. " +
+        "Cryptographically attested, first-party data feeds for AI agents — " +
+        "covering crypto markets, DeFi yields, weather, earthquakes, news, " +
+        "code-pulse, threat-intel, address reputation, sanctions screening, and " +
+        "supply-chain verdicts. Every paid response carries EIP-712 receipts you " +
+        "verify before acting: (1) a GATEWAY delivery-integrity receipt " +
+        "(X-BYTE-Attestation header, signed by the PayPerByte gateway key) proving " +
+        "these are exactly the bytes we served; and (2) on the " +
+        `${attestedCount} attested feeds (provenance:eip712-attested in GET /feeds), a ` +
+        "LIVE per-feed PayloadAttestation by that feed's OWN distinct publisher key, " +
+        "anchored ON-CHAIN — recover it from the broadcast the response references via " +
+        "txHash. (Separately, the POST verdict oracles embed their own per-feed " +
+        "`attestation` directly in the response body — recover attestation.signer.) " +
+        "Both attest authenticity + tamper-evidence " +
+        "under the BYTE Library domain. NEITHER asserts the correctness of the " +
+        "underlying data or any verdict, and NEITHER claims an independent " +
+        "third-party data source signed it — all keys are first-party PayPerByte. " +
         "Pay per call in USDC over x402 with no API keys — a " +
         "wallet, not a secret on the box. Settlement is on " +
         `${networkInfo().label} (${config.network}). Price is per-feed, derived from expected ` +
@@ -1264,8 +1273,8 @@ export function buildOpenApiDoc() {
         "  (2) EMBEDDED body `attestation` (per-feed provenance, on the verdict oracles): recompute " +
         "keccak256(canonical(answer)) === attestation.payloadHash, AND recover attestation.signer == " +
         "the feed's OWN published signer (a distinct per-feed key — NOT the gateway attester).\n" +
-        "The x402 client does the payment signing — see @payperbyte/sdk verifyFromGatewayResponse / " +
-        "GatewayClient, or any x402 v2 client.",
+        "The x402 client does the payment signing — see @payperbyte/sdk@>=0.1.6 " +
+        "verifyFromGatewayResponse / GatewayClient, or any x402 v2 client.",
     },
     servers: [{ url: "https://x402.payperbyte.io" }],
     // x402 payment is the auth scheme for every paid operation. Declared as an
