@@ -5,10 +5,11 @@
  * discovery contract that x402scan (and other agent discovery layers) read.
  * Discovery precedence: this document first, runtime 402 behavior second.
  *
- * Lists only the four *payable* resources. Free operational endpoints
- * (/feeds catalog, /health) are deliberately omitted — x402scan treats
- * every path here as a payable resource, so a free one fails its 402
- * probe and registers as an error.
+ * Lists the payable resources PLUS the two free discovery endpoints (GET /feeds
+ * catalog, GET /health). The free ones are declared with operation-level
+ * `security: []` (overriding the doc-level x402Payment) and carry NO
+ * x-payment-info and NO 402 response, so a scanner/codegen tool sees them as
+ * explicitly non-payable rather than mis-probing them for a 402.
  *
  * Every paid operation declares both halves of the contract x402scan checks:
  *   - x-payment-info  — price (fixed $/request) + protocols ([{ x402 }])
@@ -1150,6 +1151,52 @@ function bespokeOraclePaths(): Record<string, unknown> {
   return paths;
 }
 
+/** GET /feeds — the free, ungated catalog response. */
+const feedsCatalogSchema = {
+  type: "object",
+  properties: {
+    protocol: { type: "string" },
+    version: { type: "string" },
+    networks: { type: "array", items: { type: "string" } },
+    facilitator: { type: "string" },
+    asset: { type: "string" },
+    pricing: { type: "object", description: "Per-byte pricing model + floor." },
+    disclaimers: { type: "object", description: "Disclaimer header name + per-category text." },
+    feeds: {
+      type: "array",
+      description: "Every feed with its price, expected size, provenance, and accepted method(s).",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          name: { type: "string" },
+          method: {
+            type: "array",
+            items: { type: "string", enum: ["GET", "POST"] },
+            description: "Accepted HTTP verb(s) — dual-pattern feeds list both [\"GET\",\"POST\"].",
+          },
+          price: { type: "string" },
+          expectedSizeBytes: { type: "integer" },
+          provenance: { type: "string" },
+          disclaimerCategory: { type: "string" },
+        },
+      },
+    },
+  },
+  required: ["protocol", "feeds"],
+};
+
+/** GET /health — the free liveness response. */
+const healthSchema = {
+  type: "object",
+  properties: {
+    status: { type: "string", description: "\"ok\" when serving." },
+    network: { type: "string" },
+    attester: { type: "string" },
+  },
+  required: ["status"],
+};
+
 export function buildOpenApiDoc() {
   const defi = feed("defi-yields");
   const addressRep = feed("address-reputation");
@@ -1233,6 +1280,41 @@ export function buildOpenApiDoc() {
     // still recognize the endpoints as authenticated-by-payment.
     security: [{ x402Payment: [] }],
     paths: {
+      // Free, ungated discovery endpoints. `security: []` overrides the doc-level
+      // x402Payment requirement so codegen + scanners see them as NON-payable (no
+      // 402, no x-payment-info) — a complete contract without a broken auth stub.
+      "/feeds": {
+        get: {
+          operationId: "getFeedsCatalog",
+          summary: "Feed catalog (free) — every feed with price, accepted method(s), and expected size",
+          description:
+            "The free, ungated catalog. Lists all feeds with computed price, expected payload " +
+            "size, provenance, disclaimer category, and accepted HTTP method(s). No x402 payment.",
+          tags: ["Discovery"],
+          security: [],
+          responses: {
+            "200": {
+              description: "The feed catalog.",
+              content: { "application/json": { schema: feedsCatalogSchema } },
+            },
+          },
+        },
+      },
+      "/health": {
+        get: {
+          operationId: "getHealth",
+          summary: "Liveness check (free)",
+          description: "Free liveness/health probe. No x402 payment.",
+          tags: ["Discovery"],
+          security: [],
+          responses: {
+            "200": {
+              description: "Service health.",
+              content: { "application/json": { schema: healthSchema } },
+            },
+          },
+        },
+      },
       "/feeds/defi-yields": {
         get: {
           operationId: "getDefiYields",

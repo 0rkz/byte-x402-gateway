@@ -329,13 +329,15 @@ function validateOracleBody(
  *  (POST iff a POST oracle; GET iff publisher-backed broadcast OR bespoke
  *  non-oracle) so the /feeds catalog tells a dev which method to use without
  *  guessing. Self-contained (POST_ORACLES + publisher) — no external deps. */
-function feedMethods(feed: { id: string; publisher?: string }): string {
-  const ms: string[] = [];
+function feedMethods(feed: { id: string; publisher?: string }): ("GET" | "POST")[] {
+  const ms: ("GET" | "POST")[] = [];
   const isOracle = POST_ORACLES.has(feed.id);
-  // GET first to match the 405 `Allow` header ordering (GET, POST).
+  // GET first to match the 405 `Allow` header ordering (GET, POST). Returns a
+  // machine-readable array: dual-pattern feeds → ["GET","POST"], single → ["GET"]
+  // or ["POST"] (a comma-string forced clients to parse it).
   if (feed.publisher || !isOracle) ms.push("GET");
   if (isOracle) ms.push("POST");
-  return ms.join(", ");
+  return ms;
 }
 
 /**
@@ -815,7 +817,11 @@ app.post("/feeds/evidence-pack", async (req, res) => {
       // own embedded verdict attestation rides inside the body untouched.
       await sendAttestedRaw(res, text);
     } else {
-      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+      // Do NOT forward the upstream's raw body/headers — it can carry the upstream
+      // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
+      // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
+      console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
     }
   } catch (err: any) {
     res.status(502).json({ error: "evidence-pack proxy failed", detail: "upstream unavailable" });
@@ -847,7 +853,11 @@ app.post("/feeds/usc-statute", async (req, res) => {
       // the agent card advertising one on every paid response.
       await sendAttestedRaw(res, text);
     } else {
-      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+      // Do NOT forward the upstream's raw body/headers — it can carry the upstream
+      // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
+      // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
+      console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
     }
   } catch (err: any) {
     res.status(502).json({ error: "usc-statute proxy failed", detail: "upstream unavailable" });
@@ -880,7 +890,11 @@ app.post("/feeds/address-reputation", async (req, res) => {
     if (upstream.ok) {
       await sendAttestedRaw(res, text);
     } else {
-      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+      // Do NOT forward the upstream's raw body/headers — it can carry the upstream
+      // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
+      // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
+      console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
     }
   } catch (err: any) {
     res.status(502).json({ error: "address-reputation proxy failed", detail: "upstream unavailable" });
@@ -908,7 +922,11 @@ app.post("/feeds/pkg-verdict", async (req, res) => {
     if (upstream.ok) {
       await sendAttestedRaw(res, text);
     } else {
-      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+      // Do NOT forward the upstream's raw body/headers — it can carry the upstream
+      // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
+      // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
+      console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
     }
   } catch (err: any) {
     res.status(502).json({ error: "pkg-verdict proxy failed", detail: "upstream unavailable" });
@@ -934,7 +952,11 @@ app.post("/feeds/sanctions-screen", async (req, res) => {
     if (upstream.ok) {
       await sendAttestedRaw(res, text);
     } else {
-      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+      // Do NOT forward the upstream's raw body/headers — it can carry the upstream
+      // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
+      // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
+      console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
     }
   } catch (err: any) {
     res.status(502).json({ error: "sanctions-screen proxy failed", detail: "upstream unavailable" });
@@ -964,7 +986,11 @@ app.post("/feeds/reasoning-verdict", async (req, res) => {
     if (upstream.ok) {
       await sendAttestedRaw(res, text);
     } else {
-      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+      // Do NOT forward the upstream's raw body/headers — it can carry the upstream
+      // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
+      // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
+      console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
     }
   } catch (err: any) {
     res.status(502).json({ error: "reasoning-verdict proxy failed", detail: "upstream unavailable" });
@@ -994,7 +1020,11 @@ app.post("/feeds/runtime-eol", async (req, res) => {
     if (upstream.ok) {
       await sendAttestedRaw(res, text);
     } else {
-      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+      // Do NOT forward the upstream's raw body/headers — it can carry the upstream
+      // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
+      // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
+      console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
     }
   } catch (err: any) {
     res.status(502).json({ error: "runtime-eol gate proxy failed", detail: "upstream unavailable" });
@@ -1024,7 +1054,11 @@ app.post("/feeds/threat-intel", async (req, res) => {
     if (upstream.ok) {
       await sendAttestedRaw(res, text);
     } else {
-      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+      // Do NOT forward the upstream's raw body/headers — it can carry the upstream
+      // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
+      // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
+      console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
     }
   } catch (err: any) {
     res.status(502).json({ error: "threat-intel gate proxy failed", detail: "upstream unavailable" });
@@ -1073,7 +1107,11 @@ app.post("/feeds/liquidation-stream", async (req, res) => {
     if (upstream.ok) {
       await sendAttestedRaw(res, text);
     } else {
-      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+      // Do NOT forward the upstream's raw body/headers — it can carry the upstream
+      // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
+      // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
+      console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
     }
   } catch (err: any) {
     res.status(502).json({ error: "liquidation-stream proxy failed", detail: "upstream unavailable" });
@@ -1100,7 +1138,11 @@ app.post("/feeds/positioning-snapshot", async (req, res) => {
     if (upstream.ok) {
       await sendAttestedRaw(res, text);
     } else {
-      res.status(upstream.status).type(upstream.headers.get("content-type") ?? "application/json").send(text);
+      // Do NOT forward the upstream's raw body/headers — it can carry the upstream
+      // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
+      // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
+      console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
     }
   } catch (err: any) {
     res.status(502).json({ error: "positioning-snapshot proxy failed", detail: "upstream unavailable" });
