@@ -13,8 +13,9 @@ import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient, type FacilitatorConfig } from "@x402/core/server";
+import type { ResourceServerExtension } from "@x402/core/types";
 import { config, feedRegistry, DISCLAIMER_TEXT, networkInfo } from "./lib/config.js";
-import { buildOpenApiDoc, ORACLE_REQUEST_SCHEMAS, ORACLE_REQUEST_EXAMPLES } from "./lib/openapi.js";
+import { buildOpenApiDoc, ORACLE_REQUEST_SCHEMAS, ORACLE_REQUEST_EXAMPLES, ORACLE_RESPONSE_EXAMPLES } from "./lib/openapi.js";
 import { fetchDefiYields } from "./feeds/defi.js";
 import { fetchLatestPublisherPayload } from "./feeds/generic.js";
 import {
@@ -157,12 +158,73 @@ function buildAccepts(priceAtomic: string) {
 // synchronous request-response via POST proxy) — see usc-statute.
 const POST_ORACLES = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel"]);
 
-// Bazaar discovery extension per route. Minimal output examples per feed shape
-// — just enough for checkIfBazaarNeeded() in @x402/express to detect the
-// extension and auto-register bazaarResourceServerExtension on the server.
-// Per-feed enrichment (richer example payloads, input schemas, route templates)
-// can be incremental — Agentic Market's validator only needs the extension
-// surface to be present. See @x402/extensions/bazaar for the full schema.
+// ── Bazaar service metadata (PROD-15) ───────────────────────────────────────
+// CDP Bazaar catalogs `resource.serviceName` / `resource.tags` from the
+// paymentPayload's `resource` object, which the x402 client copies verbatim
+// from the 402 challenge's `resource` (ResourceInfo — see @x402/core client
+// `resource: paymentRequired.resource`). @x402 2.13.0's RouteConfig has no
+// serviceName/tags fields and the HTTP server builds ResourceInfo from
+// url/description/mimeType only, so every Bazaar row showed serviceName:null /
+// tags:null — browsing agents skip null-named entries and brand search returns
+// zero. Fix: each route declares a service-metadata extension (below, merged in
+// getExtensions) and the registered serviceMetadataExtension copies it onto the
+// challenge's resource object at 402-build time. Limits enforced downstream by
+// @x402/core's ResourceInfoSchema + the facilitator's
+// sanitizeResourceServiceMetadata (soft-drop): serviceName ≤32 printable-ASCII
+// chars; tags ≤5 entries × ≤32 printable-ASCII chars.
+const SERVICE_METADATA_KEY = "payperbyte-service-metadata";
+const SERVICE_NAME = "PayPerByte";
+
+// Per-feed Bazaar search tags. Curated for the decision oracles; every other
+// feed derives [brand, id, disclaimerCategory, provenance] so each row is still
+// individually searchable. Self-referential only — no competitor names; no
+// correctness claims ("signed-verdict" = the answer is signed, not correct).
+const FEED_TAGS: Record<string, string[]> = {
+  "sanctions-screen": ["payperbyte", "sanctions-screen", "ofac", "compliance", "signed-verdict"],
+  "address-reputation": ["payperbyte", "address-reputation", "payments-risk", "go-no-go", "signed-verdict"],
+  "pkg-verdict": ["payperbyte", "pkg-verdict", "supply-chain", "install-gate", "signed-verdict"],
+  "reasoning-verdict": ["payperbyte", "reasoning-verdict", "verify-before-act", "local-llm", "signed-verdict"],
+};
+
+/** Tags for a feed's Bazaar row — curated when listed above, else derived from
+ *  the registry entry (all values are ≤32-char printable ASCII by construction). */
+function feedTags(feedId: string): string[] {
+  const curated = FEED_TAGS[feedId];
+  if (curated) return curated;
+  const f = feedRegistry.find((x) => x.id === feedId);
+  return f ? ["payperbyte", f.id, f.disclaimerCategory, f.provenance] : ["payperbyte", feedId];
+}
+
+/**
+ * Server extension that copies each route's declared service metadata onto the
+ * 402 challenge's `resource` object (ResourceInfo declares both fields). Core
+ * only guards `accepts` after extension enrichment
+ * (assertAcceptsAllowlistedAfterExtensionEnrich) — `resource` is the documented
+ * carrier for bazaar service metadata (see sanitizeResourceServiceMetadata in
+ * @x402/extensions, "Service Metadata on `resource`"). Returns undefined so
+ * nothing extra merges into extensions[key]; the declaration itself already
+ * rides the 402 as visible (honest) metadata. Registered in
+ * setupPaymentMiddleware, before the middleware is built.
+ */
+const serviceMetadataExtension: ResourceServerExtension = {
+  key: SERVICE_METADATA_KEY,
+  enrichPaymentRequiredResponse: async (declaration, context) => {
+    const meta = declaration as { serviceName?: string; tags?: string[] } | undefined;
+    const resource = context.paymentRequiredResponse?.resource;
+    if (resource && meta) {
+      if (meta.serviceName) resource.serviceName = meta.serviceName;
+      if (Array.isArray(meta.tags) && meta.tags.length > 0) resource.tags = meta.tags;
+    }
+    return undefined;
+  },
+};
+
+// Bazaar discovery extension per route. Output examples per feed shape — enough
+// for checkIfBazaarNeeded() in @x402/express to detect the extension and
+// auto-register bazaarResourceServerExtension on the server; the decision
+// oracles additionally carry a response EXCERPT (ORACLE_RESPONSE_EXAMPLES) so a
+// browsing agent sees the verdict envelope + receipt shape before paying.
+// See @x402/extensions/bazaar for the full schema.
 //
 // Note: the input config OMITS `method` — it's inferred from the route key
 // (`GET /...` vs `POST /...`) and filled in later by
@@ -170,24 +232,33 @@ const POST_ORACLES = new Set(["evidence-pack", "usc-statute", "address-reputatio
 // the discriminant between Query (GET/HEAD/DELETE) and Body (POST/PUT/PATCH)
 // variants of the union.
 function getExtensions(feedId: string, isPost: boolean): Record<string, unknown> {
+  // Service metadata (PROD-15) rides every route's declared extensions; the
+  // registered serviceMetadataExtension copies it onto the 402's resource.
+  const serviceMetadata = { serviceName: SERVICE_NAME, tags: feedTags(feedId) };
   if (isPost) {
-    return declareDiscoveryExtension({
-      bodyType: "json",
-      // Advertise the real request body in the 402 Bazaar challenge so an agent
-      // knows what to POST (was hardcoded {} → agents paid then 400'd blind).
-      // `input` → bazaar.info.input.body must be a concrete EXAMPLE (it is
-      // validated AGAINST the schema; a schema-object-as-example fails its own
-      // schema and strict Bazaar/CDP validators then DROP the oracle). `inputSchema`
-      // → bazaar.schema.input.body is the MACHINE-READABLE JSON Schema. Both must
-      // be populated and mutually consistent.
-      input: ORACLE_REQUEST_EXAMPLES[feedId] ?? {},
-      inputSchema: ORACLE_REQUEST_SCHEMAS[feedId] ?? { properties: {} },
-      output: { example: { feed: feedId } },
-    });
+    return {
+      ...declareDiscoveryExtension({
+        bodyType: "json",
+        // Advertise the real request body in the 402 Bazaar challenge so an agent
+        // knows what to POST (was hardcoded {} → agents paid then 400'd blind).
+        // `input` → bazaar.info.input.body must be a concrete EXAMPLE (it is
+        // validated AGAINST the schema; a schema-object-as-example fails its own
+        // schema and strict Bazaar/CDP validators then DROP the oracle). `inputSchema`
+        // → bazaar.schema.input.body is the MACHINE-READABLE JSON Schema. Both must
+        // be populated and mutually consistent.
+        input: ORACLE_REQUEST_EXAMPLES[feedId] ?? {},
+        inputSchema: ORACLE_REQUEST_SCHEMAS[feedId] ?? { properties: {} },
+        output: { example: ORACLE_RESPONSE_EXAMPLES[feedId] ?? { feed: feedId } },
+      }),
+      [SERVICE_METADATA_KEY]: serviceMetadata,
+    };
   }
-  return declareDiscoveryExtension({
-    output: { example: { feed: feedId } },
-  });
+  return {
+    ...declareDiscoveryExtension({
+      output: { example: { feed: feedId } },
+    }),
+    [SERVICE_METADATA_KEY]: serviceMetadata,
+  };
 }
 
 const paymentRoutes: Record<string, any> = {};
@@ -372,6 +443,11 @@ async function setupPaymentMiddleware(): Promise<boolean> {
     const facilitator = new HTTPFacilitatorClient(facilitatorConfig);
     const server = new x402ResourceServer(facilitator)
       .register(config.network, new ExactEvmScheme());
+
+    // PROD-15: copy each route's declared serviceName/tags onto the 402's
+    // resource object (must be registered before the middleware is built; the
+    // "bazaar" key is still auto-registered separately by @x402/express).
+    server.registerExtension(serviceMetadataExtension);
 
     if (ExactSvmScheme && config.solanaPayTo) {
       server.register(config.solanaNetwork, new ExactSvmScheme());

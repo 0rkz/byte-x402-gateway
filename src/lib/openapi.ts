@@ -263,16 +263,132 @@ export const ORACLE_REQUEST_SCHEMAS: Record<string, Record<string, unknown>> = {
  *  example fail its own schema, so a strict Bazaar/CDP validator drops the oracle —
  *  hence a real example per oracle. Each satisfies its schema's required/anyOf. */
 export const ORACLE_REQUEST_EXAMPLES: Record<string, Record<string, unknown>> = {
-  "reasoning-verdict": { subject: "Release 5,000 USDC to 0x1111111111111111111111111111111111111111 for invoice #42?" },
+  "reasoning-verdict": { subject: "Release 5,000 USDC to 0x1111111111111111111111111111111111111111 for invoice #42?", kind: "transaction" },
   "runtime-eol": { product: "nodejs", version: "18" },
   "threat-intel": { components: ["log4j", "CVE-2021-44228"] },
   "evidence-pack": { claim: "USDC is fully reserved 1:1" },
   "usc-statute": { citation: "17 USC 107" },
-  "address-reputation": { domain: "example.com", address: "0x1111111111111111111111111111111111111111" },
+  "address-reputation": { domain: "example.com", address: "0x1111111111111111111111111111111111111111", amount: 50000, chain: "base" },
   "pkg-verdict": { ecosystem: "npm", package: "left-pad" },
-  "sanctions-screen": { address: "0x1111111111111111111111111111111111111111" },
+  // A name that actually hits the SDN list — paired with the BLOCK response
+  // excerpt below, it demos the dated list pin end-to-end.
+  "sanctions-screen": { name: "Lazarus Group" },
   "liquidation-stream": { asset: "BTC" },
   "positioning-snapshot": { assets: ["BTC", "ETH"] },
+};
+
+/** Per-oracle EXAMPLE response excerpt → the Bazaar declaration's `output.example`
+ *  (PROD-15) — a browsing agent sees the verdict envelope + the receipt shape
+ *  BEFORE paying, not just `{ feed }`. Kept compact: the declaration rides the
+ *  402's PAYMENT-REQUIRED header on every challenge, so these are excerpts, not
+ *  full bodies. sanctions-screen is an excerpt of a REAL answer from the live
+ *  service (queried 2026-07-01) showcasing the dated OFAC list pin; the other
+ *  three are illustrative shapes and say so in `_note`. In every case the
+ *  EIP-712 receipt proves WHO SIGNED THE EXACT BYTES (authenticity +
+ *  tamper-evidence) — never that the verdict/data is correct. Verdicts are
+ *  screening signals, not legal advice. Feeds not listed fall back to the
+ *  minimal `{ feed }` example in getExtensions(). */
+export const ORACLE_RESPONSE_EXAMPLES: Record<string, Record<string, unknown>> = {
+  "sanctions-screen": {
+    answer: {
+      v: "sanctions-screen/v1",
+      query: { address: null, name: "Lazarus Group", chain: null },
+      verdict: "BLOCK",
+      score: 0,
+      reasons: [
+        'name exactly matches OFAC SDN primary name "LAZARUS GROUP": entry #27307 "LAZARUS GROUP" [DPRK3] — list published 2026-06-30',
+      ],
+      list_state: {
+        sdn: {
+          source: "OFAC SDN (Specially Designated Nationals and Blocked Persons)",
+          published_date: "2026-06-30",
+          content_sha256: "a04efa5d60104ebd35fc08b6891811120d151bf37801fbd3c01e64380198f099",
+          entry_count: 19129,
+          stale: false,
+        },
+      },
+      methodology: "ss-v1",
+    },
+    attestation: {
+      payloadHash: "0x…",
+      signer: "0x344ECaCDe6566294c31397445c98b62a3EEEA456",
+      signature: "0x…",
+      domain: { name: "BYTE Library", version: "1", chainId: 421614, verifyingContract: "0x44729bB148F46d8Db509E47b0453edc271e06e95" },
+    },
+    _note:
+      "Excerpt of a real answer (live service, 2026-07-01); hash/signature elided, signals/consolidated " +
+      "trimmed. Every answer pins the exact OFAC list version (published date + sha256 + entry count) it " +
+      "was judged against. Screening signal, not legal advice. The EIP-712 receipt — domain chainId " +
+      "421614 = Arbitrum Sepolia, a frozen signing namespace, not a settlement rail — proves who signed " +
+      "these exact bytes (authenticity + tamper-evidence), not that the screening result is correct. " +
+      "Recompute keccak256(canonical answer bytes) and recover the signer before acting.",
+  },
+  "address-reputation": {
+    answer: {
+      v: "address-reputation/v1",
+      query: { domain: "example.com", address: "0x1111111111111111111111111111111111111111", amount: 50000, chain: "base" },
+      verdict: "WARN",
+      score: 55,
+      reasons: ["illustrative — real answers cite the ar-v1 domain (RDAP/TLS/DNS/Wayback), on-chain, and blocklist signals judged"],
+      methodology: "ar-v1",
+    },
+    attestation: {
+      payloadHash: "0x…",
+      signer: "0x…",
+      signature: "0x…",
+      domain: { name: "BYTE Library", version: "1", chainId: 421614 },
+    },
+    _note:
+      "Illustrative response shape — not a live answer. ALLOW/WARN/BLOCK is a screening signal. The " +
+      "embedded EIP-712 receipt (domain chainId 421614 = Arbitrum Sepolia, a frozen signing namespace, " +
+      "not a settlement rail) proves who signed the exact answer bytes — not that the verdict is correct.",
+  },
+  "pkg-verdict": {
+    answer: {
+      v: "pkg-verdict/v1",
+      query: { ecosystem: "npm", package: "left-pad", version: null, version_requested: null },
+      verdict: "ALLOW",
+      score: 96,
+      reasons: ["illustrative — real answers cite the pv-v1 OSV.dev / typosquat / registry / known-bad signals judged"],
+      methodology: "pv-v1",
+    },
+    attestation: {
+      payloadHash: "0x…",
+      signer: "0x…",
+      signature: "0x…",
+      domain: { name: "BYTE Library", version: "1", chainId: 421614 },
+    },
+    _note:
+      "Illustrative response shape — not a live answer. ALLOW/WARN/BLOCK is a screening signal. The " +
+      "embedded EIP-712 receipt (domain chainId 421614 = Arbitrum Sepolia, a frozen signing namespace, " +
+      "not a settlement rail) proves who signed the exact answer bytes — not that the verdict is correct.",
+  },
+  "reasoning-verdict": {
+    answer: {
+      v: "reasoning-verdict/v1",
+      kind: "transaction",
+      subject: "Release 5,000 USDC to 0x1111111111111111111111111111111111111111 for invoice #42?",
+      verdict: "WARN",
+      score: 40,
+      summary: "illustrative — a one-sentence rationale from the LOCAL model",
+      reasons: ["illustrative — real answers list the model's risk reasons"],
+      confidence: "medium",
+      ruleset: "rv-v1",
+      disclaimer:
+        "The receipt proves these exact bytes came from this publisher; it does NOT guarantee the " +
+        "verdict is correct. AI-generated advisory analysis — verify independently before acting.",
+    },
+    attestation: {
+      payloadHash: "0x…",
+      signer: "0x…",
+      signature: "0x…",
+      domain: { name: "BYTE Library", version: "1", chainId: 421614 },
+    },
+    _note:
+      "Illustrative response shape — not a live answer. The verdict is advisory. The embedded EIP-712 " +
+      "receipt (domain chainId 421614 = Arbitrum Sepolia, a frozen signing namespace, not a settlement " +
+      "rail) proves who signed the exact answer bytes — not that the verdict is correct.",
+  },
 };
 
 /** Per-feed x-payment-info block — price varies by expected payload size. */
