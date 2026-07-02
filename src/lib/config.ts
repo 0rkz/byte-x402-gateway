@@ -370,17 +370,17 @@ export const feedRegistry: FeedMetadata[] = [
   // risk. Restore $0.10 + the supported/refuted verdict ONLY after the gate clears.
   customPricedFeed("evidence-pack", "Evidence Pack Oracle", "RAG-citable meta-oracle: retrieve from PayPerByte factual feeds + signed citation bundle with sources.", "on-demand", 4000, "general", "100000"),
   // address-reputation is decision-priced, not size-priced (a wrong ALLOW on a
-  // drainer address = irreversible USDC loss) — same $0.05 tier as evidence-pack.
-  customPricedFeed("address-reputation", "Address Reputation Oracle", "Agentic-payments go/no-go verdict: synchronous signed ALLOW/WARN/BLOCK for (domain, receiving address, amount, chain) BEFORE releasing USDC. ar-v1 ruleset over RDAP/TLS/DNS/Wayback domain signals + on-chain receiving-address signals + curated known-bad blocklist. The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting.", "on-demand", 2500, "commerce", "150000"),
-  // pkg-verdict: decision-priced $0.05 — install-gate verdict, same tier as address-reputation.
-  customPricedFeed("pkg-verdict", "Package Verdict Oracle", "Signed ALLOW/WARN/BLOCK on installing a package@version: OSV.dev malicious-corpus + typosquat distance + registry signals. Verify before you install.", "on-demand", 2500, "general", "150000"),
-  // sanctions-screen: decision-priced $0.05 — compliance go/no-go, same tier as address-reputation.
-  customPricedFeed("sanctions-screen", "Sanctions Screen Oracle", "Signed, version-pinned OFAC SDN + Consolidated screening on an address or name; every answer embeds the pinned list-state (date + sha256) it was judged against.", "on-demand", 2500, "legal", "150000"),
+  // drainer address = irreversible USDC loss) — same $0.10 tier as evidence-pack.
+  customPricedFeed("address-reputation", "Address Reputation Oracle", "Agentic-payments go/no-go verdict: synchronous signed ALLOW/WARN/BLOCK for (domain, receiving address, amount, chain) BEFORE releasing USDC. ar-v1 ruleset over RDAP/TLS/DNS/Wayback domain signals + on-chain receiving-address signals + curated known-bad blocklist. The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting.", "on-demand", 2500, "commerce", "100000"),
+  // pkg-verdict: decision-priced $0.10 — install-gate verdict, same tier as address-reputation.
+  customPricedFeed("pkg-verdict", "Package Verdict Oracle", "Signed ALLOW/WARN/BLOCK on installing a package@version: OSV.dev malicious-corpus + typosquat distance + registry signals. Verify before you install.", "on-demand", 2500, "general", "100000"),
+  // sanctions-screen: decision-priced $0.10 — compliance go/no-go, same tier as address-reputation.
+  customPricedFeed("sanctions-screen", "Sanctions Screen Oracle", "Signed, version-pinned OFAC SDN + Consolidated screening on an address or name; every answer embeds the pinned list-state (date + sha256) it was judged against.", "on-demand", 2500, "legal", "100000"),
   // reasoning-verdict: GPU-backed local-LLM verify-before-act oracle. Compute-priced
-  // $0.05 (decision-oracle tier) — an agent about to act on a message/payload/proposal
+  // $0.10 (decision-oracle tier) — an agent about to act on a message/payload/proposal
   // gets a signed ALLOW/WARN/BLOCK/ABSTAIN + reasons it verifies before acting. The
   // verdict is ADVISORY; the embedded EIP-712 receipt proves provenance, not correctness.
-  customPricedFeed("reasoning-verdict", "Reasoning Verdict Oracle (local LLM)", "Verify-before-act risk oracle: POST an action context (message, payload, proposal, payee, tool-call) and get a signed ALLOW/WARN/BLOCK/ABSTAIN verdict + 0-100 safe-to-proceed score + reasons from a LOCAL model (no data egress). The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting. Advisory: the receipt proves provenance/integrity, not correctness.", "on-demand", 2200, "general", "150000"),
+  customPricedFeed("reasoning-verdict", "Reasoning Verdict Oracle (local LLM)", "Verify-before-act risk oracle: POST an action context (message, payload, proposal, payee, tool-call) and get a signed ALLOW/WARN/BLOCK/ABSTAIN verdict + 0-100 safe-to-proceed score + reasons from a LOCAL model (no data egress). The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting. Advisory: the receipt proves provenance/integrity, not correctness.", "on-demand", 2200, "general", "100000"),
   // token-safety delisted 2026-06-12 — NOT in this registry (so it has no payment
   // gate). Its route in index.ts is a 410-Gone stub (fails closed, serves no data)
   // until the ts-v1 provider contract is finalized and it is re-added here WITH a gate.
