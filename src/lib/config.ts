@@ -64,9 +64,7 @@ export const config = {
   cacheTtl: parseInt(process.env.CACHE_TTL || "60", 10) * 1000,
   /** Optional CoinGecko API key for higher rate limits */
   coinGeckoApiKey: process.env.COINGECKO_API_KEY || "",
-  /** Byte Protocol fact-oracle URL for the /feeds/fact-query proxy */
-  factOracleUrl: process.env.FACT_ORACLE_URL || "https://fact-oracle.payperbyte.io",
-  /** evidence-pack oracle URL — Tier 1 bespoke proxy (LAUNCH_PLAN §13). */
+  /** evidence-pack oracle URL — Tier 1 bespoke proxy. */
   evidencePackUrl: process.env.EVIDENCE_PACK_URL || "https://evidence-pack.payperbyte.io",
   /** usc-statute oracle URL — Tier 1 bespoke proxy. */
   uscStatuteUrl: process.env.USC_STATUTE_URL || "https://usc-statute.payperbyte.io",
@@ -167,11 +165,11 @@ export function networkInfo(): { label: string; chain: string; status: "mainnet"
 }
 
 /**
- * Universal disclaimer taxonomy (LAUNCH_PLAN §14). Every feed declares one.
+ * Universal disclaimer taxonomy. Every feed declares one.
  * The gateway emits `X-BYTE-Disclaimer-Category: <category>` on every response
  * so clients can render the right legal language without parsing the payload.
  *
- * Pending Ari Good legal review (§14). The signed in-payload disclaimer-text
+ * Pending Ari Good legal review. The signed in-payload disclaimer-text
  * upgrade for existing 15 publishers lands as a batch op after he signs off
  * on final wording; the new Tier 1 publishers ship with in-payload signing
  * from day one. Header coverage is universal.
@@ -208,7 +206,7 @@ export interface FeedMetadata {
   /** HTTP endpoint path */
   endpoint: string;
   /**
-   * Disclaimer category (§14 universal disclaimer schema). The gateway
+   * Disclaimer category (universal disclaimer schema). The gateway
    * surfaces this on the `X-BYTE-Disclaimer-Category` response header AND in
    * the /feeds catalog metadata so buyers can preview liability framing
    * before purchase.
@@ -366,23 +364,23 @@ export const feedRegistry: FeedMetadata[] = [
   indexerFeed("stablecoin-rails", "Stablecoin Rails", "Cross-chain stablecoin supply (USDC/USDT/DAI/PYUSD) + Circle iris-api health.", "300s", 4000, "0x48faae04641bca4acaa5a030f4b0b97f1184b167", "commerce"),
   indexerFeed("perp-funding", "Perp Funding Rates", "Cross-venue perpetual-swap funding rates (Hyperliquid, dYdX, Aevo live; GMX + Vertex coming v1.1) + spread. Annualized.", "300s", 1500, "0x533f447c2b82cf903e8189778636ef96c652c892", "financial"),
   indexerFeed("usc-statute", "US Code Statute Oracle", "On-demand current text of a US Code section, public-domain, with content hash + source URLs. Q&A oracle.", "on-demand", 2500, "0xd056caa08710473649d48e9e9e7c126d4f24d870", "legal"),
-  // evidence-pack REPRICED $0.10 -> $0.02 (2026-06-22): its §13 determinism gate
+  // evidence-pack REPRICED $0.10 -> $0.02 (2026-06-22): its determinism gate
   // does not yet pass (true-rate ~0.5, hallucinated excerpts), so it ships only
   // the citation-bundle today — pricing it as the highest feed was a credibility
   // risk. Restore $0.10 + the supported/refuted verdict ONLY after the gate clears.
-  customPricedFeed("evidence-pack", "Evidence Pack Oracle", "RAG-citable meta-oracle: retrieve from PayPerByte factual feeds + signed citation bundle with sources.", "on-demand", 4000, "general", "20000"),
+  customPricedFeed("evidence-pack", "Evidence Pack Oracle", "RAG-citable meta-oracle: retrieve from PayPerByte factual feeds + signed citation bundle with sources.", "on-demand", 4000, "general", "100000"),
   // address-reputation is decision-priced, not size-priced (a wrong ALLOW on a
   // drainer address = irreversible USDC loss) — same $0.05 tier as evidence-pack.
-  customPricedFeed("address-reputation", "Address Reputation Oracle", "Agentic-payments go/no-go verdict: synchronous signed ALLOW/WARN/BLOCK for (domain, receiving address, amount, chain) BEFORE releasing USDC. ar-v1 ruleset over RDAP/TLS/DNS/Wayback domain signals + on-chain receiving-address signals + curated known-bad blocklist. The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting.", "on-demand", 2500, "commerce", "50000"),
+  customPricedFeed("address-reputation", "Address Reputation Oracle", "Agentic-payments go/no-go verdict: synchronous signed ALLOW/WARN/BLOCK for (domain, receiving address, amount, chain) BEFORE releasing USDC. ar-v1 ruleset over RDAP/TLS/DNS/Wayback domain signals + on-chain receiving-address signals + curated known-bad blocklist. The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting.", "on-demand", 2500, "commerce", "150000"),
   // pkg-verdict: decision-priced $0.05 — install-gate verdict, same tier as address-reputation.
-  customPricedFeed("pkg-verdict", "Package Verdict Oracle", "Signed ALLOW/WARN/BLOCK on installing a package@version: OSV.dev malicious-corpus + typosquat distance + registry signals. Verify before you install.", "on-demand", 2500, "general", "50000"),
+  customPricedFeed("pkg-verdict", "Package Verdict Oracle", "Signed ALLOW/WARN/BLOCK on installing a package@version: OSV.dev malicious-corpus + typosquat distance + registry signals. Verify before you install.", "on-demand", 2500, "general", "150000"),
   // sanctions-screen: decision-priced $0.05 — compliance go/no-go, same tier as address-reputation.
-  customPricedFeed("sanctions-screen", "Sanctions Screen Oracle", "Signed, version-pinned OFAC SDN + Consolidated screening on an address or name; every answer embeds the pinned list-state (date + sha256) it was judged against.", "on-demand", 2500, "legal", "50000"),
+  customPricedFeed("sanctions-screen", "Sanctions Screen Oracle", "Signed, version-pinned OFAC SDN + Consolidated screening on an address or name; every answer embeds the pinned list-state (date + sha256) it was judged against.", "on-demand", 2500, "legal", "150000"),
   // reasoning-verdict: GPU-backed local-LLM verify-before-act oracle. Compute-priced
   // $0.05 (decision-oracle tier) — an agent about to act on a message/payload/proposal
   // gets a signed ALLOW/WARN/BLOCK/ABSTAIN + reasons it verifies before acting. The
   // verdict is ADVISORY; the embedded EIP-712 receipt proves provenance, not correctness.
-  customPricedFeed("reasoning-verdict", "Reasoning Verdict Oracle (local LLM)", "Verify-before-act risk oracle: POST an action context (message, payload, proposal, payee, tool-call) and get a signed ALLOW/WARN/BLOCK/ABSTAIN verdict + 0-100 safe-to-proceed score + reasons from a LOCAL model (no data egress). The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting. Advisory: the receipt proves provenance/integrity, not correctness.", "on-demand", 2200, "general", "50000"),
+  customPricedFeed("reasoning-verdict", "Reasoning Verdict Oracle (local LLM)", "Verify-before-act risk oracle: POST an action context (message, payload, proposal, payee, tool-call) and get a signed ALLOW/WARN/BLOCK/ABSTAIN verdict + 0-100 safe-to-proceed score + reasons from a LOCAL model (no data egress). The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting. Advisory: the receipt proves provenance/integrity, not correctness.", "on-demand", 2200, "general", "150000"),
   // token-safety delisted 2026-06-12 — NOT in this registry (so it has no payment
   // gate). Its route in index.ts is a 410-Gone stub (fails closed, serves no data)
   // until the ts-v1 provider contract is finalized and it is re-added here WITH a gate.

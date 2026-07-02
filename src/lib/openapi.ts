@@ -290,6 +290,13 @@ export const ORACLE_REQUEST_EXAMPLES: Record<string, Record<string, unknown>> = 
  *  minimal `{ feed }` example in getExtensions(). */
 export const ORACLE_RESPONSE_EXAMPLES: Record<string, Record<string, unknown>> = {
   "sanctions-screen": {
+    _note:
+      "Excerpt of a real answer (live service, 2026-07-01); hash/signature elided, signals/consolidated " +
+      "trimmed. Every answer pins the exact OFAC list version (published date + sha256 + entry count) it " +
+      "was judged against. Screening signal, not legal advice. The EIP-712 receipt — domain chainId " +
+      "421614 = Arbitrum Sepolia, a frozen signing namespace, not a settlement rail — proves who signed " +
+      "these exact bytes (authenticity + tamper-evidence), not that the screening result is correct. " +
+      "Recompute keccak256(canonical answer bytes) and recover the signer before acting.",
     answer: {
       v: "sanctions-screen/v1",
       query: { address: null, name: "Lazarus Group", chain: null },
@@ -315,15 +322,12 @@ export const ORACLE_RESPONSE_EXAMPLES: Record<string, Record<string, unknown>> =
       signature: "0x…",
       domain: { name: "BYTE Library", version: "1", chainId: 421614, verifyingContract: "0x44729bB148F46d8Db509E47b0453edc271e06e95" },
     },
-    _note:
-      "Excerpt of a real answer (live service, 2026-07-01); hash/signature elided, signals/consolidated " +
-      "trimmed. Every answer pins the exact OFAC list version (published date + sha256 + entry count) it " +
-      "was judged against. Screening signal, not legal advice. The EIP-712 receipt — domain chainId " +
-      "421614 = Arbitrum Sepolia, a frozen signing namespace, not a settlement rail — proves who signed " +
-      "these exact bytes (authenticity + tamper-evidence), not that the screening result is correct. " +
-      "Recompute keccak256(canonical answer bytes) and recover the signer before acting.",
   },
   "address-reputation": {
+    _note:
+      "Illustrative response shape — not a live answer. ALLOW/WARN/BLOCK is a screening signal. The " +
+      "embedded EIP-712 receipt (domain chainId 421614 = Arbitrum Sepolia, a frozen signing namespace, " +
+      "not a settlement rail) proves who signed the exact answer bytes — not that the verdict is correct.",
     answer: {
       v: "address-reputation/v1",
       query: { domain: "example.com", address: "0x1111111111111111111111111111111111111111", amount: 50000, chain: "base" },
@@ -338,12 +342,12 @@ export const ORACLE_RESPONSE_EXAMPLES: Record<string, Record<string, unknown>> =
       signature: "0x…",
       domain: { name: "BYTE Library", version: "1", chainId: 421614 },
     },
+  },
+  "pkg-verdict": {
     _note:
       "Illustrative response shape — not a live answer. ALLOW/WARN/BLOCK is a screening signal. The " +
       "embedded EIP-712 receipt (domain chainId 421614 = Arbitrum Sepolia, a frozen signing namespace, " +
       "not a settlement rail) proves who signed the exact answer bytes — not that the verdict is correct.",
-  },
-  "pkg-verdict": {
     answer: {
       v: "pkg-verdict/v1",
       query: { ecosystem: "npm", package: "left-pad", version: null, version_requested: null },
@@ -358,12 +362,12 @@ export const ORACLE_RESPONSE_EXAMPLES: Record<string, Record<string, unknown>> =
       signature: "0x…",
       domain: { name: "BYTE Library", version: "1", chainId: 421614 },
     },
-    _note:
-      "Illustrative response shape — not a live answer. ALLOW/WARN/BLOCK is a screening signal. The " +
-      "embedded EIP-712 receipt (domain chainId 421614 = Arbitrum Sepolia, a frozen signing namespace, " +
-      "not a settlement rail) proves who signed the exact answer bytes — not that the verdict is correct.",
   },
   "reasoning-verdict": {
+    _note:
+      "Illustrative response shape — not a live answer. The verdict is advisory. The embedded EIP-712 " +
+      "receipt (domain chainId 421614 = Arbitrum Sepolia, a frozen signing namespace, not a settlement " +
+      "rail) proves who signed the exact answer bytes — not that the verdict is correct.",
     answer: {
       v: "reasoning-verdict/v1",
       kind: "transaction",
@@ -384,10 +388,6 @@ export const ORACLE_RESPONSE_EXAMPLES: Record<string, Record<string, unknown>> =
       signature: "0x…",
       domain: { name: "BYTE Library", version: "1", chainId: 421614 },
     },
-    _note:
-      "Illustrative response shape — not a live answer. The verdict is advisory. The embedded EIP-712 " +
-      "receipt (domain chainId 421614 = Arbitrum Sepolia, a frozen signing namespace, not a settlement " +
-      "rail) proves who signed the exact answer bytes — not that the verdict is correct.",
   },
 };
 

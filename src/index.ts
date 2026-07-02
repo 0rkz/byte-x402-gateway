@@ -54,6 +54,48 @@ app.set("trust proxy", 1);
 // Don't advertise the framework (no `X-Powered-By: Express` header).
 app.disable("x-powered-by");
 
+// ── CORS (browser preflight + x402 header exposure) ────────────────────────
+// This is a PUBLIC, credential-less read/pay API: any web origin (a dApp, an
+// agent dashboard, a Bazaar/402index browser) may call it, and responses carry
+// NO cookies or session state. So we return Access-Control-Allow-Origin: "*" —
+// a wildcard, DELIBERATELY not a reflected Origin and WITHOUT
+// Access-Control-Allow-Credentials: "*"+credentials is both a spec violation
+// and a CSRF footgun, and there is nothing credentialed here to protect.
+//
+// The entire x402 handshake lives in HTTP headers a cross-origin browser
+// fetch() cannot read unless we name them in Access-Control-Expose-Headers.
+// Verified against @x402/core (chunk-4CEZVZ3P.mjs): the 402 challenge rides the
+// PAYMENT-REQUIRED response header (createHTTPPaymentRequiredResponse), the paid
+// settlement receipt rides PAYMENT-RESPONSE (createSettlementHeaders), and the
+// client also reads X-PAYMENT-RESPONSE as the v1 fallback (getPaymentSettleResponse).
+// We add our own provenance headers X-BYTE-Attestation + X-BYTE-Disclaimer-Category
+// and Content-Length so a browser client can size and verify the exact bytes it
+// paid for before acting.
+//
+// Inbound, the x402 client sends its payment signature as X-PAYMENT (v1) or
+// PAYMENT-SIGNATURE (v2) — the express adapter reads payment-signature||x-payment
+// — so Access-Control-Allow-Headers admits both plus Content-Type and Authorization.
+// Preflight (OPTIONS) is answered HERE with 204 BEFORE the trailing-slash
+// canonicalizer, the payment gate, the HEAD guard, and the 405/400 layers, so a
+// browser's preflight never trips those and the real GET/POST proceeds normally.
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader(
+    "Access-Control-Expose-Headers",
+    "X-BYTE-Attestation, X-BYTE-Disclaimer-Category, PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-PAYMENT-RESPONSE, Content-Length",
+  );
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Content-Type, X-PAYMENT, PAYMENT-SIGNATURE, Authorization",
+    );
+    res.setHeader("Access-Control-Max-Age", "86400");
+    return res.sendStatus(204);
+  }
+  return next();
+});
+
 // Canonicalize a trailing slash on /feeds/<slug>/ → /feeds/<slug>. @x402 builds
 // the 402 challenge's `resource.url` from `req.originalUrl`, so a trailing-slash
 // request would advertise a NON-canonical resource.url (…/feeds/slug/) that
@@ -572,7 +614,7 @@ app.use((req, res, next) => {
   return next();
 });
 
-// ── Universal disclaimer header (§14) ──────────────────────────────────────
+// ── Universal disclaimer header ───────────────────────────────────────────
 // Every feed declares a disclaimerCategory in its FeedMetadata. We emit
 // X-BYTE-Disclaimer-Category on every feed response so agents/clients can
 // render the right legal framing without parsing payload. The category-to-
@@ -918,7 +960,7 @@ app.get("/feeds/defi-yields", async (_req, res) => {
 });
 
 /**
- * evidence-pack — RAG-citable meta-oracle (LAUNCH_PLAN §13).
+ * evidence-pack — RAG-citable meta-oracle (Tier-1 bespoke proxy).
  * Body: { claim: string, domains?: string[], max_sources?: int,
  *         subscriber_address?, subscriber_signature?, request_nonce?, deadline_unix? }
  */
