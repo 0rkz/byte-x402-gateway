@@ -341,16 +341,14 @@ const PRICE_OVERRIDES: Record<string, string> = {
 export const feedRegistry: FeedMetadata[] = [
   // crypto-top100 delisted 2026-06-12 — commodity feed, cut from priced catalog.
   // crypto-top100 route + fetcher REMOVED 2026-06-14 (CoinGecko no-resale; it served data UNPAID).
-  bespokeFeed("defi-yields", "DeFi Yields", "Top DeFi protocol yields across major chains", "120s", 10000, "financial"),
+  // defi-yields delisted 2026-07-03 (concentration cut)
   // ── BYTE Library publisher feeds (served via the generic discovery-api proxy)
   // Each entry's `publisher` is the on-chain Arbitrum address registered on
   // DataRegistry; the gateway proxies the latest BroadcastStreamed payload
   // for that publisher. `expectedSizeBytes` is sampled from recent broadcasts.
   indexerFeed("weather", "Weather (US, multi-city)", "NWS weather forecasts for 5 US cities (NYC, LA, Chicago, Houston, Miami)", "3600s", 4400, "0xa820763c023a929e83c59e4fd5a623e5a8efe941", "general"),
   indexerFeed("earthquakes", "Earthquakes", "USGS recent earthquakes worldwide (M2.5+)", "900s", 300, "0xa1a55406de233901257aec7b499a26f040ba3cfa", "general"),
-  indexerFeed("space-weather", "Space Weather", "NOAA SWPC solar activity, geomagnetic storms, Kp index", "3600s", 500, "0x5c3b05e1b6654d96445193d98b39e2aa4ddffdc4", "general"),
-  indexerFeed("news-feed", "News (LLM-curated)", "LLM-curated news headlines with source citations", "1800s", 1300, "0x551a4ed7f4a8cf5170a5efc5a5d1266386962e73", "general"),
-  indexerFeed("code-pulse", "Code Pulse", "Repo / package release tracker — latest releases of high-signal OSS projects", "1800s", 2100, "0x15bfc9492940ff2620118f4611eaed949a8415db", "general"),
+  // space-weather, news-feed, code-pulse delisted 2026-07-03 (concentration cut)
   indexerFeed("runtime-eol", "Runtime EOL", "End-of-life dates and status for language runtimes, frameworks, OSes (endoflife.date)", "daily", 14200, "0x17a67d0d18f9b93f064a23d2076074ea8802216f", "general"),
   // Copy fixed 2026-06-11 (FEED_ROADMAP integrity item): the feed relays public
   // CISA/NVD data — it does not produce first-party IOC detection. Don't overclaim.
@@ -360,10 +358,7 @@ export const feedRegistry: FeedMetadata[] = [
   // on-chain publisher address from the registerPublisher tx. expectedSizeBytes
   // estimates per the launch-plan-review §8 size-class table; resample once
   // a representative payload is broadcast.
-  indexerFeed("x402-pulse", "x402 Network Pulse", "Rolling-window metrics for the PayPerByte x402 facilitator: verify/settle counts, per-network/scheme breakdowns, top payers, optional on-chain cross-check.", "60s", 3000, "0x96cf11a1f9aa09dcd8fca91f6d45bd7cc5049c69", "commerce"),
-  indexerFeed("stablecoin-rails", "Stablecoin Rails", "Cross-chain stablecoin supply (USDC/USDT/DAI/PYUSD) + Circle iris-api health.", "300s", 4000, "0x48faae04641bca4acaa5a030f4b0b97f1184b167", "commerce"),
-  indexerFeed("perp-funding", "Perp Funding Rates", "Cross-venue perpetual-swap funding rates (Hyperliquid, dYdX, Aevo live; GMX + Vertex coming v1.1) + spread. Annualized.", "300s", 1500, "0x533f447c2b82cf903e8189778636ef96c652c892", "financial"),
-  indexerFeed("usc-statute", "US Code Statute Oracle", "On-demand current text of a US Code section, public-domain, with content hash + source URLs. Q&A oracle.", "on-demand", 2500, "0xd056caa08710473649d48e9e9e7c126d4f24d870", "legal"),
+  // x402-pulse, stablecoin-rails, perp-funding, usc-statute delisted 2026-07-03 (concentration cut)
   // evidence-pack REPRICED $0.10 -> $0.02 (2026-06-22): its determinism gate
   // does not yet pass (true-rate ~0.5, hallucinated excerpts), so it ships only
   // the citation-bundle today — pricing it as the highest feed was a credibility
@@ -388,16 +383,7 @@ export const feedRegistry: FeedMetadata[] = [
   bespokeFeed("liquidation-stream", "Liquidation Stream Oracle", "Hawkes branching-ratio (self-excitation) verdict over a first-party realized-liquidation archive: SUBCRITICAL/NEAR_CRITICAL/SUPERCRITICAL.", "on-demand", 1620, "financial"),
   // positioning-snapshot: per-KB priced on expectedSizeBytes=7480 (~$0.037) — market data.
   bespokeFeed("positioning-snapshot", "Positioning Snapshot Oracle", "Cross-venue perp positioning (funding + open interest) from Hyperliquid, dYdX v4, Aevo; raw fields, abstains honestly where a venue lacks data.", "on-demand", 7480, "financial"),
-  // ── Agent-Infrastructure Index (SHIPY 2026-06-17): first-party, byte-scored,
-  // compounding daily snapshots of the decentralized agent-runtime stack. Each metric
-  // carries provenance; provider counts are concurrent-active (cumulative flagged).
-  // Publisher = TIER1_PLACEHOLDER until register_oracles.py is run for this cohort.
-  // Token price is on-chain via Pyth (CoinGecko removed catalog-wide 2026-06-18).
-  // SHIP-GATE before PAID launch: license Render Foundation data (or use on-chain RNDR
-  // burn) + clear Subscan terms for Autonomys. See the spec licensing + ship-gates.
-  indexerFeed("agent-compute", "Agent Compute Index", "Decentralized GPU/compute networks an agent can rent (Akash, Render, io.net, Golem, Bittensor, Nosana, Aethir, Hyperbolic): concurrent-active provider counts where independently pollable (cumulative counts flagged), computed GPU utilization, per-metric provenance + data-quality flags, and a byte_score. First-party compounding snapshot, not a relayed dashboard.", "daily", 14000, "0x8392d50b9E0B4f8EfA3C5F9cA71a274A0BC3f88A", "financial"),
-  indexerFeed("agent-memory", "Agent Memory Index", "Decentralized storage/memory networks for agent state + RAG (Filecoin, Walrus, Arweave, Storj, Autonomys, Sia, Irys, 0G): active-node accounting and used-vs-capacity where source APIs respond, geo-concentration, agent-memory tooling status, per-metric provenance + data-quality flags, and a byte_score.", "daily", 13000, "0x5334ddF3914aaC384f953e74D059da21e4A23681", "financial"),
-  indexerFeed("agent-tools", "Agent Tools Index", "Decentralized networks exposing an agent-callable tool surface — MCP servers, on-chain request buses, OpenAI-compatible inference (Chainlink, Akash, Morpheus, Olas, Virtuals, Bittensor, GaiaNet, Nillion). Tiered: every entry carries a decentralization-maturity flag + verified-vs-claimed split.", "daily", 17000, "0xc2F2B9173e91C4ad540fECa12F78D70B445957c8", "financial"),
+  // agent-compute, agent-memory, agent-tools (Agent-Infrastructure Index) delisted 2026-07-03 (concentration cut)
 ];
 
 /** Build a bespoke (upstream-API-backed) feed entry. */

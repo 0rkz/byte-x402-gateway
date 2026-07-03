@@ -198,7 +198,7 @@ function buildAccepts(priceAtomic: string) {
 // request body; broadcast/scheduled feeds are GET. Some publisher-backed
 // oracles offer both (subscribe-then-listen via GET indexer proxy AND
 // synchronous request-response via POST proxy) — see usc-statute.
-const POST_ORACLES = new Set(["evidence-pack", "usc-statute", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel"]);
+const POST_ORACLES = new Set(["evidence-pack", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel"]);
 
 // ── Bazaar service metadata (PROD-15) ───────────────────────────────────────
 // CDP Bazaar catalogs `resource.serviceName` / `resource.tags` from the
@@ -949,14 +949,9 @@ app.get("/health", (_req, res) => {
 // served data UNPAID (delisted from feedRegistry → no payment gate). Feed + fetcher
 // retired. See OUTSTANDING_ACTIONS §5.4.
 
-/** Top DeFi yield pools across major chains. */
-app.get("/feeds/defi-yields", async (_req, res) => {
-  try {
-    const data = await fetchDefiYields();
-    await sendAttested(res, data);
-  } catch (err: any) {
-    res.status(502).json({ error: "Failed to fetch DeFi yield data", detail: "upstream unavailable" });
-  }
+/** defi-yields — DELISTED 2026-07-03 (concentration cut). 410-Gone stub. */
+app.get("/feeds/defi-yields", (_req, res) => {
+  res.status(410).json({ error: "delisted", detail: "defi-yields was retired in the 2026-07-03 concentration cut — no longer served." });
 });
 
 /**
@@ -999,31 +994,8 @@ app.post("/feeds/evidence-pack", async (req, res) => {
  * This explicit POST proxy is the request-response synchronous path for
  * agents that don't want to subscribe — dual GET/POST pattern.
  */
-app.post("/feeds/usc-statute", async (req, res) => {
-  try {
-    const body = req.body ?? {};
-    const upstream = await fetch(`${config.uscStatuteUrl}/query`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const text = await upstream.text();
-    if (upstream.ok) {
-      // Add the gateway X-BYTE-Attestation receipt — usc-statute carries no
-      // embedded verdict attestation (it's statute text), so this is its ONLY
-      // provenance receipt; without it a paid 200 had zero attestation despite
-      // the agent card advertising one on every paid response.
-      await sendAttestedRaw(res, text);
-    } else {
-      // Do NOT forward the upstream's raw body/headers — it can carry the upstream
-      // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
-      // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
-      console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
-      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
-    }
-  } catch (err: any) {
-    res.status(502).json({ error: "usc-statute proxy failed", detail: "upstream unavailable" });
-  }
+app.post("/feeds/usc-statute", (_req, res) => {
+  res.status(410).json({ error: "delisted", detail: "usc-statute was retired in the 2026-07-03 concentration cut — no longer served." });
 });
 
 /**
