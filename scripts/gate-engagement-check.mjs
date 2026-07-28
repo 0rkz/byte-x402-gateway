@@ -59,7 +59,7 @@ const CATALOG_PATH = path.resolve(GATEWAY_DIR, "../distribution-agent/catalog/fe
 // Slugs that must NEVER be served (delisted / no-resale license / dangling). A
 // live handler for any of these — even one that 5xx's because its upstream is
 // down — is the leak class: flip the upstream up and it serves paid data free.
-const DENYLIST = ["crypto-top100", "btc-metrics", "token-safety", "fact-oracle"];
+const DENYLIST = ["crypto-top100", "btc-metrics", "token-safety", "fact-oracle", "liquidation-stream", "evidence-pack"];
 
 // Free/meta routes the gate must NOT block (over-blocking is its own failure).
 const FREE_ROUTES = ["/health", "/feeds", "/openapi.json", "/.well-known/x402.json"];

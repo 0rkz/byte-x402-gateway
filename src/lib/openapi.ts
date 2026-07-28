@@ -34,7 +34,12 @@ import { config, feedRegistry, networkInfo } from "./config.js";
 // appeared in the doc anyway — dropped here to stay in sync with POST_ORACLES
 // (index.ts) and avoid advertising a delisted resource if it is ever re-added
 // to the registry before its gate.
-const POST_ORACLE_IDS = new Set(["evidence-pack", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel"]);
+// evidence-pack and liquidation-stream removed 2026-07-28 (same reason, same
+// pattern — both DELISTED, not in feedRegistry). Without this,
+// buildOpenApiDoc()'s explicit `feed("liquidation-stream")` lookup throws
+// (feedRegistry has no entry for it), 500ing the free /openapi.json route —
+// caught by gate-engagement-check.mjs's free-route-reachable assertion.
+const POST_ORACLE_IDS = new Set(["address-reputation", "pkg-verdict", "sanctions-screen", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel"]);
 
 /** Per-oracle request-body schema, keyed by feed id. Each oracle takes a
  *  different question/claim/citation field plus optional on-chain delivery
@@ -904,9 +909,16 @@ const byteLibraryFeedSchema = {
     feed: { type: "string" },
     publisher: { type: "string", description: "Publisher's on-chain address" },
     timestamp: { type: "string", format: "date-time" },
-    source: { const: "byte-library-broadcast" },
-    txHash: { type: "string", description: "DataStream broadcast tx hash" },
-    payloadHash: { type: "string", description: "keccak256 of the broadcast payload" },
+    // "byte-library-broadcast" = served from the on-chain-anchored discovery-api
+    // archive (has txHash). "live" = P1 fix 2026-07-28 — served directly from the
+    // feed's live-query companion when the broadcast archive is stale/empty (no
+    // txHash this cycle; see feeds/generic.ts fetchFeedPayload + the `live` case
+    // in attestationReceiptBlock().embedded.verify). Widened from a single-value
+    // const so a buyer validating a live response against this schema doesn't
+    // reject a valid delivery.
+    source: { type: "string", enum: ["byte-library-broadcast", "live"] },
+    txHash: { type: "string", description: "DataStream broadcast tx hash. Absent on a `live`-sourced response — there is no on-chain event that cycle." },
+    payloadHash: { type: "string", description: "keccak256 of the payload. On `byte-library-broadcast`, the on-chain-committed hash; on `live`, the live-query companion's own EIP-712 PayloadAttestation payloadHash." },
     payloadBytes: { type: "integer" },
     data: {
       description: "Publisher-defined payload. Shape varies; see byte-data-feeds repo for per-feed schemas.",
@@ -1249,11 +1261,11 @@ function indexerFeedPaths(): Record<string, unknown> {
  *  these endpoints were missing from the contract entirely. */
 function bespokeOraclePaths(): Record<string, unknown> {
   // IDs declared explicitly in buildOpenApiDoc() with bespoke response schemas.
+  // liquidation-stream removed 2026-07-28 (delisted — see POST_ORACLE_IDS above).
   const EXPLICIT_IDS = new Set([
     "address-reputation",
     "pkg-verdict",
     "sanctions-screen",
-    "liquidation-stream",
     "positioning-snapshot",
     "reasoning-verdict",
   ]);
@@ -1317,7 +1329,9 @@ export function buildOpenApiDoc() {
   const addressRep = feed("address-reputation");
   const pkgVerdict = feed("pkg-verdict");
   const sanctionsScreen = feed("sanctions-screen");
-  const liquidationStream = feed("liquidation-stream");
+  // liquidation-stream lookup removed 2026-07-28 — delisted, no longer in
+  // feedRegistry; `feed()` throws on a missing id (see its own comment), and
+  // it was 500ing the free /openapi.json route (see POST_ORACLE_IDS above).
   const positioningSnapshot = feed("positioning-snapshot");
   const reasoningVerdict = feed("reasoning-verdict");
   // Feeds whose payload itself carries a LIVE per-feed EIP-712 attestation (a
@@ -1359,8 +1373,8 @@ export function buildOpenApiDoc() {
         "price (see x-payment-info per operation); the catalog at GET /feeds " +
         "(free, ungated) lists every feed with its computed price and " +
         "expected payload size. POST oracle endpoints (address-reputation, " +
-        "sanctions-screen, pkg-verdict, reasoning-verdict, evidence-pack, " +
-        "usc-statute, runtime-eol, threat-intel, liquidation-stream, " +
+        "sanctions-screen, pkg-verdict, reasoning-verdict, " +
+        "usc-statute, runtime-eol, threat-intel, " +
         "positioning-snapshot) require a JSON body and return their signed " +
         "answer SYNCHRONOUSLY in the 200 — see the requestBody/response schema " +
         "per operation. usc-statute, runtime-eol, and threat-intel ALSO serve a " +
@@ -1490,23 +1504,9 @@ export function buildOpenApiDoc() {
           responses: paidResponses(sanctionsScreenResponseSchema, sanctionsScreen.priceAtomic),
         },
       },
-      "/feeds/liquidation-stream": {
-        post: {
-          operationId: "postLiquidationStream",
-          summary: `Liquidation Stream — signed cascade-risk regime (${liquidationStream.price} per verdict)`,
-          description: liquidationStream.description,
-          tags: ["Feeds"],
-          security: [{ x402Payment: [] }],
-          "x-payment-info": paymentInfo(liquidationStream.priceAtomic),
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": { schema: ORACLE_REQUEST_SCHEMAS["liquidation-stream"] },
-            },
-          },
-          responses: paidResponses(liquidationStreamResponseSchema, liquidationStream.priceAtomic),
-        },
-      },
+      // /feeds/liquidation-stream removed 2026-07-28 — delisted (see
+      // POST_ORACLE_IDS above); the route is now a 410-Gone stub (index.ts),
+      // so it no longer belongs in the payable contract.
       "/feeds/positioning-snapshot": {
         post: {
           operationId: "postPositioningSnapshot",

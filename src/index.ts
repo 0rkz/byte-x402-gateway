@@ -14,10 +14,10 @@ import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient, type FacilitatorConfig } from "@x402/core/server";
 import type { ResourceServerExtension } from "@x402/core/types";
-import { config, feedRegistry, DISCLAIMER_TEXT, networkInfo } from "./lib/config.js";
+import { config, feedRegistry, DISCLAIMER_TEXT, networkInfo, FEED_LIVE_URL, FEED_STALE_AFTER_S } from "./lib/config.js";
 import { buildOpenApiDoc, ORACLE_REQUEST_SCHEMAS, ORACLE_REQUEST_EXAMPLES, ORACLE_RESPONSE_EXAMPLES } from "./lib/openapi.js";
 import { fetchDefiYields } from "./feeds/defi.js";
-import { fetchLatestPublisherPayload } from "./feeds/generic.js";
+import { fetchFeedPayload } from "./feeds/generic.js";
 import {
   sendAttested,
   sendAttestedRaw,
@@ -198,7 +198,11 @@ function buildAccepts(priceAtomic: string) {
 // request body; broadcast/scheduled feeds are GET. Some publisher-backed
 // oracles offer both (subscribe-then-listen via GET indexer proxy AND
 // synchronous request-response via POST proxy) — see usc-statute.
-const POST_ORACLES = new Set(["evidence-pack", "address-reputation", "pkg-verdict", "sanctions-screen", "liquidation-stream", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel"]);
+// evidence-pack and liquidation-stream DELISTED 2026-07-28 (founder-approved,
+// in-session — see the delist comments in lib/config.ts feedRegistry and the
+// 410-Gone stubs below) — removed from POST_ORACLES so neither the payment
+// gate nor the body-validation middleware treats them as live.
+const POST_ORACLES = new Set(["address-reputation", "pkg-verdict", "sanctions-screen", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel"]);
 
 // ── Bazaar service metadata (PROD-15) ───────────────────────────────────────
 // CDP Bazaar catalogs `resource.serviceName` / `resource.tags` from the
@@ -647,11 +651,17 @@ app.get("/feeds", (_req, res) => {
     networks,
     facilitator: config.facilitatorUrl,
     asset: config.usdcAddress,
+    // Copy fixed 2026-07-28 (TASK A integrity item): this block self-described
+    // a per-byte formula, but every feed in feedRegistry today is priced via
+    // an explicit PRICE_OVERRIDES / customPricedFeed value-tier price (see
+    // config.ts) — none currently fall through to the per-KB computation, so
+    // the old text didn't reproduce ANY listed price (e.g. weather: formula
+    // ≈$0.0215 vs listed $0.005). Values are UNCHANGED — copy only.
     pricing: {
-      model: "per-byte",
+      model: "fixed-per-call",
+      note: "Each feed is priced per call at a fixed rate set by its decision/data value (not payload size) — see each feed entry's `price` below. A per-KB rate (pricePerKB/floor) exists as a fallback formula for any future feed without an explicit price, but no currently-listed feed uses it.",
       pricePerKB: `$${(Number(config.pricePerKBAtomic) / 1_000_000).toFixed(6)}`,
       floor: `$${(Number(config.priceFloorAtomic) / 1_000_000).toFixed(6)}`,
-      note: "Per-feed price = max(floor, ceil(expectedSizeBytes / 1024 × pricePerKB)). Each feed entry below carries its computed price + expectedSizeBytes.",
     },
     disclaimers: {
       header: "X-BYTE-Disclaimer-Category",
@@ -710,6 +720,54 @@ function feedMethodValue(feed: { id: string; publisher?: string }): "GET" | "POS
  * domain chainId is a testnet id even though funds settle on mainnet. Returns
  * undefined when no attestation key is configured.
  */
+/**
+ * POST-oracle signer addresses — the public key each oracle signs its
+ * embedded PayloadAttestation with (each oracle derives this at startup from
+ * its own configured key, the same way data-feeds/*\/gate.py already does).
+ *
+ * FD 2026-07-28: without this, the embedded-attestation "verify" recipe for
+ * POST oracles (see attestationReceiptBlock().embedded.verify.oracle below)
+ * is CIRCULAR — a buyer recomputes keccak256(answer), recovers a signer, then
+ * checks it against `attestation.signer`, a field the SAME response supplies.
+ * There is nothing independent to compare against. Publishing each oracle's
+ * expected signer here (like `signers` already does for the on-chain
+ * broadcast feeds, via the independently-configured `publisher` field) closes
+ * that gap: a buyer checks the recovered signer against a value pinned in the
+ * manifest, not against the response's own self-reported claim.
+ *
+ * Sourced from env so a key rotation is a config change, not a code change.
+ * UNSET (omitted from the manifest) by default for EVERY entry — do NOT
+ * hardcode a signer address, even one observed live: a key rotation would
+ * make the manifest reject good data until someone remembered to update
+ * source (FD 2026-07-28, M1 — this file previously hardcoded a fallback for
+ * REASONING_VERDICT_SIGNER; removed). The value observed live 2026-07-28T21:55Z
+ * via byte-reasoning-verdict.service's own /healthz was
+ * `0xe6447AfD82A5E119B5250220Ab6ac2ae7d7f65ab` — set
+ * REASONING_VERDICT_SIGNER to that (after confirming it's still current) to
+ * populate this entry; it is NOT a default here.
+ * None of these 4 oracles (address-reputation, pkg-verdict, sanctions-screen,
+ * positioning-snapshot, reasoning-verdict) currently expose their signer via
+ * /healthz except reasoning-verdict (and threat-intel-gate, whose signer
+ * belongs to a different route — see the SHIPY report), so most of these
+ * addresses were not safely obtainable without either handling raw key
+ * material (correctly blocked) or editing live services beyond this diff's
+ * scope — recommended follow-up: add a `signer` field to each oracle's own
+ * /healthz, mirroring reasoning-verdict/threat-intel-gate.
+ */
+// evidence-pack and liquidation-stream omitted below — both DELISTED
+// 2026-07-28 (see the 410-Gone stubs), no live route to publish a signer for.
+const ORACLE_SIGNERS: Record<string, string> = Object.fromEntries(
+  (
+    [
+      ["address-reputation", process.env.ADDRESS_REPUTATION_SIGNER],
+      ["pkg-verdict", process.env.PKG_VERDICT_SIGNER],
+      ["sanctions-screen", process.env.SANCTIONS_SCREEN_SIGNER],
+      ["reasoning-verdict", process.env.REASONING_VERDICT_SIGNER],
+      ["positioning-snapshot", process.env.POSITIONING_SNAPSHOT_SIGNER],
+    ] as [string, string | undefined][]
+  ).filter((entry): entry is [string, string] => Boolean(entry[1])),
+);
+
 function attestationReceiptBlock() {
   if (!attestationEnabled()) return undefined;
   return {
@@ -744,24 +802,77 @@ function attestationReceiptBlock() {
           "recover the publisher's EIP-712 PayloadAttestation from the on-chain " +
           "BroadcastStreamed event at responseBody.txHash; confirm responseBody.publisher " +
           "=== signers[feed] and responseBody.payloadHash matches the broadcast.",
+        // GET publisher feeds where responseBody.source === "live" (P1 fix
+        // 2026-07-28, feeds/generic.ts fetchFeedPayload): served directly from
+        // the feed's live-query companion, NOT the on-chain archive — there is
+        // NO BroadcastStreamed event this cycle (no txHash), so the `broadcast`
+        // recipe above does not apply. The signature is instead EMBEDDED in
+        // responseBody.data.attestation (same shape as a POST oracle's
+        // embedded receipt) — recover it directly, THEN confirm it against the
+        // SAME independently-published signers[feed] the broadcast recipe
+        // checks: live-query companions sign with the identical registered
+        // publisher key by design (see data-feeds/*/live.py), not a separate
+        // one, so this closes the same self-referential gap `oracle` below
+        // still has for any feed id absent from `signers`.
+        // FD 2026-07-28 (final PASS condition): "canonical(x)" was ambiguous —
+        // a JS buyer following it literally (JSON.parse then re-serialize)
+        // gets a MISMATCH on otherwise-valid data, because a JSON writer that
+        // normalizes numbers (e.g. renders 3.0 as 3) does not reproduce the
+        // exact bytes the publisher signed. Defined explicitly below for both
+        // `live` and `oracle` — FD proved the identical defect breaks the
+        // `oracle` recipe for JS buyers TODAY in production (sampled payloads
+        // mismatch under JS recompute, match under Python), so both get the
+        // same fix in this one edit. Full canonicalization-spec/SDK work is a
+        // separate lane; this is the doc-correctness half only.
+        live:
+          "canonical(x) = the EXACT byte substring of x as delivered in this response — the " +
+          "gateway forwards the live-query companion's bytes VERBATIM (never re-serialized), so " +
+          "extract responseBody.data.answer directly from the raw response text, NOT by " +
+          "JSON.parse-ing then re-serializing it: a JSON writer that normalizes numbers (e.g. " +
+          "renders 3.0 as 3) will not reproduce the bytes the publisher signed, and the recompute " +
+          "mismatches on otherwise-valid data. keccak256(canonical(responseBody.data.answer)) === " +
+          "responseBody.data.attestation.payloadHash AND recoverTypedDataAddress(domain, " +
+          "{PayloadAttestation}, message, responseBody.data.attestation.signature) === " +
+          "responseBody.data.attestation.signer AND confirm responseBody.data.attestation.signer " +
+          "=== signers[feed]. (responseBody.payloadHash mirrors the same value at the top level " +
+          "for parity with the broadcast shape. Publisher-side note: avoid trailing-.0 float " +
+          "literals where possible — a common source of this exact cross-implementation mismatch.)",
         // POST verdict oracles: the signature is EMBEDDED in the response body's
-        // `attestation` object — recover it directly.
+        // `attestation` object — recover it directly. Where the feed id ALSO
+        // appears in `signers` (currently: reasoning-verdict — see
+        // ORACLE_SIGNERS), also confirm attestation.signer === signers[feed]
+        // for an independent binding, not just a self-check against the
+        // response's own claim; feed ids absent from `signers` still lack that
+        // binding today (tracked follow-up, not yet closed for every oracle).
         oracle:
-          "recompute keccak256(canonical(answer)) === attestation.payloadHash AND " +
-          "recoverTypedDataAddress(domain, {PayloadAttestation}, message, attestation.signature) " +
-          "=== attestation.signer (the feed's own per-feed key — NOT the gateway attester).",
+          "canonical(x) = the EXACT byte substring of x as delivered — same defect and same fix " +
+          "as the `live` recipe above (FD 2026-07-28: this recipe mismatches for a JS buyer that " +
+          "re-serializes today): extract `answer` from the raw response bytes, never by " +
+          "JSON.parse-ing then re-serializing the parsed object. keccak256(canonical(answer)) === " +
+          "attestation.payloadHash AND recoverTypedDataAddress(domain, {PayloadAttestation}, " +
+          "message, attestation.signature) === attestation.signer (the feed's own per-feed key — " +
+          "NOT the gateway attester); if signers[feed] is present, also confirm attestation.signer " +
+          "=== signers[feed].",
       },
       note:
         "A distinct per-feed key, separate from the gateway X-BYTE-Attestation header. " +
         "First-party PayPerByte (not an independent third-party data source), NOT a " +
-        "correctness guarantee. `signers` lists the on-chain publisher key per attested " +
-        "feed; feeds absent from it carry only the gateway header receipt (the POST verdict " +
-        "oracles among them additionally embed their own `attestation` in the body).",
-      signers: Object.fromEntries(
-        feedRegistry
-          .filter((f) => f.provenance === "eip712-attested" && f.publisher)
-          .map((f) => [f.id, f.publisher]),
-      ),
+        "correctness guarantee. `signers` maps feed id -> that feed's expected signer, " +
+        "independently of what any single response claims: for eip712-attested broadcast " +
+        "feeds it's the on-chain-registered publisher address; for POST oracles (where " +
+        "configured — see ORACLE_SIGNERS) it's the oracle's own key, published here so the " +
+        "`oracle` verify recipe above isn't just checking a response against itself. A feed " +
+        "id absent from `signers` (an oracle whose address isn't configured yet) still embeds " +
+        "its own `attestation.signer` in the body — verifiable for tamper-evidence, just not " +
+        "yet pinnable against an independent expected value.",
+      signers: {
+        ...Object.fromEntries(
+          feedRegistry
+            .filter((f) => f.provenance === "eip712-attested" && f.publisher)
+            .map((f) => [f.id, f.publisher]),
+        ),
+        ...ORACLE_SIGNERS,
+      },
     },
   };
 }
@@ -941,6 +1052,40 @@ app.get("/health", (_req, res) => {
   });
 });
 
+/**
+ * Extract a safe, honest detail string from an upstream oracle's error body,
+ * for the buyer to see instead of a flat "upstream error" (FD 2026-07-28:
+ * upstreams produce precise, brand-correct explanations — e.g. liquidation-
+ * stream's INSUFFICIENT_DATA — that were being discarded; address-reputation's
+ * opaque 400 on a well-formed CAIP-2 body is the same bug).
+ *
+ * Every first-party oracle proxied below returns clean structured JSON errors
+ * ({"error": "..."} — verified across data-feeds/*\/server.py) with no host,
+ * IP, or stack trace. Forward ONLY a short string from a known-safe field;
+ * any other shape (non-JSON body, an HTML error page, an overlong or
+ * non-string field) falls back to the original opaque detail — preserving
+ * the R4 leak-class defense this file already documents for the genuinely-
+ * unexpected-failure case (a crashed, misconfigured, or non-first-party
+ * upstream).
+ */
+const MAX_SAFE_UPSTREAM_DETAIL_LEN = 300;
+function safeUpstreamDetail(rawBody: string): string {
+  try {
+    const body = JSON.parse(rawBody) as Record<string, unknown>;
+    const candidate = body.error ?? body.detail ?? body.reason;
+    if (
+      typeof candidate === "string" &&
+      candidate.length > 0 &&
+      candidate.length <= MAX_SAFE_UPSTREAM_DETAIL_LEN
+    ) {
+      return candidate;
+    }
+  } catch {
+    /* not JSON — fall through to the generic detail */
+  }
+  return "upstream error";
+}
+
 // ---------------------------------------------------------------------------
 // Paid Endpoints
 // ---------------------------------------------------------------------------
@@ -955,34 +1100,30 @@ app.get("/feeds/defi-yields", (_req, res) => {
 });
 
 /**
- * evidence-pack — RAG-citable meta-oracle (Tier-1 bespoke proxy).
- * Body: { claim: string, domains?: string[], max_sources?: int,
- *         subscriber_address?, subscriber_signature?, request_nonce?, deadline_unix? }
+ * evidence-pack — DELISTED 2026-07-28 (founder-approved, in-session): serves
+ * off-description output (catalog says "retrieve from PayPerByte factual
+ * feeds"; TASK A found it actually retrieves from Wikipedia) with an
+ * undisclosed third-party egress path, and marked a temporally bogus citation
+ * (2008 Sichuan earthquake) as "supporting" a "last 24h" claim. NOT in
+ * feedRegistry (lib/config.ts) — no payment gate — so this is an explicit
+ * 410-Gone stub (NOT a live proxy), matching the token-safety pattern: the
+ * route FAILS CLOSED and never reaches the upstream, closing the
+ * dangling-route leak class (a handler outside the payment gate would serve
+ * paid data free the moment its upstream came up).
+ *
+ * Re-list = fix the grounding source + disclose the egress path, restore the
+ * proxy body, and re-add a feedRegistry entry so the payment gate covers it
+ * (and re-add to POST_ORACLES + openapi POST_ORACLE_IDS). Until then the
+ * pre-ship gate-engagement check (scripts/gate-engagement-check.mjs) asserts
+ * this route stays 404/410.
  */
-app.post("/feeds/evidence-pack", async (req, res) => {
-  try {
-    const body = req.body ?? {};
-    const upstream = await fetch(`${config.evidencePackUrl}/query`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const text = await upstream.text();
-    if (upstream.ok) {
-      // Add the gateway X-BYTE-Attestation receipt over the exact bytes — every
-      // paid 200 carries it (the agent card advertises this); evidence-pack's
-      // own embedded verdict attestation rides inside the body untouched.
-      await sendAttestedRaw(res, text);
-    } else {
-      // Do NOT forward the upstream's raw body/headers — it can carry the upstream
-      // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
-      // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
-      console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
-      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
-    }
-  } catch (err: any) {
-    res.status(502).json({ error: "evidence-pack proxy failed", detail: "upstream unavailable" });
-  }
+app.post("/feeds/evidence-pack", (_req, res) => {
+  res.status(410).json({
+    error: "delisted",
+    detail:
+      "evidence-pack is delisted pending a grounding-source fix and egress disclosure — it is not " +
+      "currently served. It will return once re-listed with a payment gate.",
+  });
 });
 
 /**
@@ -1028,7 +1169,7 @@ app.post("/feeds/address-reputation", async (req, res) => {
       // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
       // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
       console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
-      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
     res.status(502).json({ error: "address-reputation proxy failed", detail: "upstream unavailable" });
@@ -1060,7 +1201,7 @@ app.post("/feeds/pkg-verdict", async (req, res) => {
       // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
       // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
       console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
-      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
     res.status(502).json({ error: "pkg-verdict proxy failed", detail: "upstream unavailable" });
@@ -1090,7 +1231,7 @@ app.post("/feeds/sanctions-screen", async (req, res) => {
       // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
       // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
       console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
-      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
     res.status(502).json({ error: "sanctions-screen proxy failed", detail: "upstream unavailable" });
@@ -1124,7 +1265,7 @@ app.post("/feeds/reasoning-verdict", async (req, res) => {
       // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
       // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
       console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
-      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
     res.status(502).json({ error: "reasoning-verdict proxy failed", detail: "upstream unavailable" });
@@ -1158,7 +1299,7 @@ app.post("/feeds/runtime-eol", async (req, res) => {
       // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
       // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
       console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
-      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
     res.status(502).json({ error: "runtime-eol gate proxy failed", detail: "upstream unavailable" });
@@ -1192,7 +1333,7 @@ app.post("/feeds/threat-intel", async (req, res) => {
       // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
       // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
       console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
-      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
     res.status(502).json({ error: "threat-intel gate proxy failed", detail: "upstream unavailable" });
@@ -1222,34 +1363,30 @@ app.post("/feeds/token-safety", (_req, res) => {
 });
 
 /**
- * liquidation-stream — Hawkes cascade-risk regime oracle.
- * Body: { asset: string, window_h?: number }
- * 200: { answer: { verdict: SUBCRITICAL|NEAR_CRITICAL|SUPERCRITICAL|INSUFFICIENT_DATA, … },
- *        attestation: { … }, broadcast: { … } }
+ * liquidation-stream — DELISTED 2026-07-28 (founder-approved, in-session): the
+ * realized-liquidation collector has been dead since 2026-06-12 (no live
+ * venue legs — see byte-liquidation-stream-api.service healthz
+ * archive_days=[2026-06-09,2026-06-12]), so a paid query can only answer
+ * INSUFFICIENT_DATA off a 7-week-stale archive. NOT in feedRegistry
+ * (lib/config.ts) — no payment gate — so this is an explicit 410-Gone stub
+ * (NOT a live proxy), matching the token-safety pattern: the route FAILS
+ * CLOSED and never reaches the upstream, closing the dangling-route leak
+ * class (a handler outside the payment gate would serve paid data free the
+ * moment its upstream came up).
  *
- * Forwarded BYTE-FOR-BYTE (sendAttestedRaw).
+ * Re-list = restore a live venue feed to the collector, restore the proxy
+ * body, and re-add a feedRegistry entry so the payment gate covers it (and
+ * re-add to POST_ORACLES + openapi POST_ORACLE_IDS). Until then the pre-ship
+ * gate-engagement check (scripts/gate-engagement-check.mjs) asserts this
+ * route stays 404/410.
  */
-app.post("/feeds/liquidation-stream", async (req, res) => {
-  try {
-    const body = req.body ?? {};
-    const upstream = await fetch(`${config.liquidationStreamUrl}/query`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const text = await upstream.text();
-    if (upstream.ok) {
-      await sendAttestedRaw(res, text);
-    } else {
-      // Do NOT forward the upstream's raw body/headers — it can carry the upstream
-      // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
-      // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
-      console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
-      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
-    }
-  } catch (err: any) {
-    res.status(502).json({ error: "liquidation-stream proxy failed", detail: "upstream unavailable" });
-  }
+app.post("/feeds/liquidation-stream", (_req, res) => {
+  res.status(410).json({
+    error: "delisted",
+    detail:
+      "liquidation-stream is delisted pending a live venue-data collector — it is not " +
+      "currently served. It will return once re-listed with a payment gate.",
+  });
 });
 
 /**
@@ -1276,25 +1413,59 @@ app.post("/feeds/positioning-snapshot", async (req, res) => {
       // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
       // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
       console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
-      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: "upstream error" });
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
     res.status(502).json({ error: "positioning-snapshot proxy failed", detail: "upstream unavailable" });
   }
 });
 
-// BYTE Library publisher-backed feeds — generic handler proxying the latest
-// archived broadcast from the discovery-api. Driven by feedRegistry; adding a
-// publisher only requires editing config.ts.
+// BYTE Library publisher-backed feeds — generic handler serving the current
+// payload. Driven by feedRegistry; adding a publisher only requires editing
+// config.ts. fetchFeedPayload() (feeds/generic.ts) prefers each feed's live
+// companion service (FEED_LIVE_URL, opt-in per feed — P1 fix 2026-07-28) over
+// the discovery-api broadcast archive, and FAILS CLOSED (throws -> 502 here)
+// rather than ever resolve with null or stale-beyond-tolerance data, so a
+// paying caller is never charged for either (a >=400 response makes the x402
+// middleware cancel settlement).
 for (const feed of feedRegistry) {
   if (!feed.publisher) continue;
   const publisher = feed.publisher;
   const slug = feed.id;
   app.get(feed.endpoint, async (_req, res) => {
     try {
-      const data = await fetchLatestPublisherPayload({ slug, publisher });
-      // X-BYTE-Attestation: sign the exact bytes we return (verify-before-act).
-      await sendAttested(res, data);
+      const payload = await fetchFeedPayload({
+        slug,
+        publisher,
+        liveUrl: FEED_LIVE_URL[slug] || undefined,
+        staleAfterS: FEED_STALE_AFTER_S[slug],
+      });
+      if (payload.rawDataBytes !== undefined) {
+        // Live-sourced (FD 2026-07-28, BLOCKER 3): splice the live-query
+        // companion's `data` bytes VERBATIM into the envelope — never
+        // JSON.stringify the parsed `payload` object for this case. A
+        // parse -> re-stringify round trip can silently change bytes (e.g.
+        // Python's json.dumps renders a float as "10.0"; the same value
+        // survives JSON.parse -> JSON.stringify in Node as "10"), which
+        // would break the `live` verify recipe's keccak256 recompute over
+        // responseBody.data.answer — there is no on-chain fallback for a
+        // live response the way there is for a broadcast one. Matches the
+        // POST-oracle sendAttestedRaw discipline (lib/attestation.ts). The
+        // wrapper fields (feed/publisher/timestamp/payloadHash) are plain
+        // strings — JSON.stringify of a string is lossless, so only `data`
+        // needs verbatim splicing.
+        const body =
+          `{"feed":${JSON.stringify(payload.feed)}` +
+          `,"publisher":${JSON.stringify(payload.publisher)}` +
+          `,"timestamp":${JSON.stringify(payload.timestamp)}` +
+          `,"source":"live"` +
+          (payload.payloadHash ? `,"payloadHash":${JSON.stringify(payload.payloadHash)}` : "") +
+          `,"data":${payload.rawDataBytes}}`;
+        await sendAttestedRaw(res, body);
+      } else {
+        // X-BYTE-Attestation: sign the exact bytes we return (verify-before-act).
+        await sendAttested(res, payload);
+      }
     } catch (err: any) {
       res.status(502).json({ error: `Failed to fetch ${slug}`, detail: "upstream unavailable" });
     }

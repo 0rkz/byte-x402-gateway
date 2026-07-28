@@ -138,6 +138,81 @@ export const config = {
   // path uses DISCOVERY_API_URL read in feeds/generic.ts, defaulting to
   // https://api.payperbyte.io. The historical BYTE_INDEXER_URL env was a
   // misleading no-op.)
+  /**
+   * weather live-query URL — P1 fix (2026-07-28, direction (a)). GET
+   * /feeds/weather previously served ONLY the discovery-api broadcast
+   * archive (feeds/generic.ts), which goes stale/null whenever
+   * byte-weather.service prunes to zero solvent subscribers and skips its
+   * on-chain broadcast (broadcast_helper.publish_broadcast never archives a
+   * 0-subscriber cycle) — confirmed root cause of the 2026-07-28 paid-GET
+   * `data: null` incident (weather, earthquakes, runtime-eol GET all hit
+   * this; threat-intel did not, because its publisher still had solvent
+   * subscribers — this is per-publisher, not broadcast-class-wide).
+   * When set, fetchFeedPayload() (feeds/generic.ts) tries this endpoint
+   * FIRST — it serves the feed service's current computed payload
+   * independent of subscriber economics — and falls back to the broadcast
+   * archive only if unreachable. Runs on the same host
+   * (byte-weather-live.service, port 8101 — moved off the originally-picked
+   * 8097 after M2's port audit found it contested by
+   * data-feeds/market-regime/server.py's own default; 8101 confirmed clean
+   * against every PORT default in data-feeds/ and every currently-listening
+   * socket, NOT installed by default — see
+   * data-feeds/weather/byte-weather-live.service); NOT exposed via
+   * cloudflared. Unset by default so this is opt-in per feed, not
+   * class-wide surgery.
+   */
+  weatherLiveUrl: process.env.WEATHER_LIVE_URL || "",
+  /** earthquakes live-query URL — same P1 fix, see weatherLiveUrl above.
+   *  byte-earthquakes-live.service, port 8099 (NOT installed by default). */
+  earthquakesLiveUrl: process.env.EARTHQUAKES_LIVE_URL || "",
+  /**
+   * runtime-eol live-query URL for the GET table path — same P1 fix, see
+   * weatherLiveUrl above. Distinct from runtimeEolGateUrl (the POST
+   * decision-tier oracle, already unaffected — it never reads the broadcast
+   * archive). byte-runtime-eol-live.service, port 8100 (NOT installed by
+   * default).
+   */
+  runtimeEolLiveUrl: process.env.RUNTIME_EOL_LIVE_URL || "",
+};
+
+/**
+ * Per-feed live-query URL lookup for fetchFeedPayload() (feeds/generic.ts).
+ * Deliberately a separate map, not a FeedMetadata field — these are internal
+ * loopback addresses (like *GateUrl / *Url above) and must never leak into
+ * the public /feeds or x402 manifest JSON. Empty/unset entries are treated
+ * as "no live source configured" (pure fallback to the broadcast archive,
+ * byte-for-byte the pre-fix behavior) — so wiring this up is opt-in and
+ * per-feed-safe: a feed absent from this map (e.g. threat-intel, which is
+ * not currently broken) is completely unaffected by the live-fetch path.
+ */
+export const FEED_LIVE_URL: Record<string, string> = {
+  weather: config.weatherLiveUrl,
+  earthquakes: config.earthquakesLiveUrl,
+  "runtime-eol": config.runtimeEolLiveUrl,
+};
+
+/**
+ * Per-feed broadcast-archive staleness tolerance, in seconds, for
+ * fetchFeedPayload(). If the archived broadcast is the ONLY source available
+ * (no live URL configured/reachable) and its age exceeds this, the gateway
+ * fails closed (502, never charged) rather than serve a payload old enough
+ * that "current" is no longer an honest description — this is the backstop
+ * for when a live companion service is itself down. Roughly 3x each feed's
+ * own updateFrequency (see feedRegistry below): generous enough to tolerate
+ * a slow-but-not-frozen cycle, tight enough to catch genuine multi-day
+ * staleness. Feeds absent from this map (e.g. threat-intel) get NO staleness
+ * check — only the universal null-data check in fetchFeedPayload applies —
+ * so this is additive, not class-wide surgery.
+ */
+export const FEED_STALE_AFTER_S: Record<string, number> = {
+  weather: 3 * 3600,        // 3h (updateFrequency 3600s)
+  earthquakes: 3 * 900,     // 45min (updateFrequency 900s)
+  // FD 2026-07-28, L3: the catalog's updateFrequency for this feed said
+  // "daily" (86400s), but data-feeds/runtime-eol/feed.py's actual broadcast
+  // loop is INTERVAL = 21600 (6h) — the catalog string was corrected (see
+  // feedRegistry below) and this tolerance now derives from the true
+  // cadence, not the wrong one (was 3 days, 4x too lenient).
+  "runtime-eol": 3 * 21600, // 18h (updateFrequency corrected to "21600s")
 };
 
 /**
@@ -349,7 +424,10 @@ export const feedRegistry: FeedMetadata[] = [
   indexerFeed("weather", "Weather (US, multi-city)", "NWS weather forecasts for 5 US cities (NYC, LA, Chicago, Houston, Miami)", "3600s", 4400, "0xa820763c023a929e83c59e4fd5a623e5a8efe941", "general"),
   indexerFeed("earthquakes", "Earthquakes", "USGS recent earthquakes worldwide (M2.5+)", "900s", 300, "0xa1a55406de233901257aec7b499a26f040ba3cfa", "general"),
   // space-weather, news-feed, code-pulse delisted 2026-07-03 (concentration cut)
-  indexerFeed("runtime-eol", "Runtime EOL", "End-of-life dates and status for language runtimes, frameworks, OSes (endoflife.date)", "daily", 14200, "0x17a67d0d18f9b93f064a23d2076074ea8802216f", "general"),
+  // updateFrequency corrected 2026-07-28 (FD L3): "daily" (86400s) did not
+  // match data-feeds/runtime-eol/feed.py's actual broadcast loop, INTERVAL =
+  // 21600 (6h). See FEED_STALE_AFTER_S above for the dependent tolerance fix.
+  indexerFeed("runtime-eol", "Runtime EOL", "End-of-life dates and status for language runtimes, frameworks, OSes (endoflife.date)", "21600s", 14200, "0x17a67d0d18f9b93f064a23d2076074ea8802216f", "general"),
   // Copy fixed 2026-06-11 (FEED_ROADMAP integrity item): the feed relays public
   // CISA/NVD data — it does not produce first-party IOC detection. Don't overclaim.
   indexerFeed("threat-intel", "Security Advisories Digest", "Recent CVE highlights + CISA known-exploited-vulnerability entries, relayed from public sources (NVD, CISA KEV)", "3600s", 5300, "0xb90b00f891dc534a5b59c60170661b868f3c26de", "general"),
@@ -359,11 +437,13 @@ export const feedRegistry: FeedMetadata[] = [
   // estimates per the launch-plan-review §8 size-class table; resample once
   // a representative payload is broadcast.
   // x402-pulse, stablecoin-rails, perp-funding, usc-statute delisted 2026-07-03 (concentration cut)
-  // evidence-pack REPRICED $0.10 -> $0.02 (2026-06-22): its determinism gate
-  // does not yet pass (true-rate ~0.5, hallucinated excerpts), so it ships only
-  // the citation-bundle today — pricing it as the highest feed was a credibility
-  // risk. Restore $0.10 + the supported/refuted verdict ONLY after the gate clears.
-  customPricedFeed("evidence-pack", "Evidence Pack Oracle", "RAG-citable meta-oracle: retrieve from PayPerByte factual feeds + signed citation bundle with sources.", "on-demand", 4000, "general", "100000"),
+  // evidence-pack DELISTED 2026-07-28 (founder-approved, in-session): serves
+  // off-description output (catalog says "retrieve from PayPerByte factual
+  // feeds"; TASK A found it actually retrieves from Wikipedia) with an
+  // undisclosed third-party egress path, and marked a temporally bogus
+  // citation (2008 Sichuan earthquake) as "supporting" a "last 24h" claim.
+  // Its route in index.ts is now a 410-Gone stub. NOT in this registry — no
+  // payment gate — until the grounding-source/egress-disclosure gap is fixed.
   // address-reputation is decision-priced, not size-priced (a wrong ALLOW on a
   // drainer address = irreversible USDC loss) — same $0.10 tier as evidence-pack.
   customPricedFeed("address-reputation", "Address Reputation Oracle", "Agentic-payments go/no-go verdict: synchronous signed ALLOW/WARN/BLOCK for (domain, receiving address, amount, chain) BEFORE releasing USDC. ar-v1 ruleset over RDAP/TLS/DNS/Wayback domain signals + on-chain receiving-address signals + curated known-bad blocklist. The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting.", "on-demand", 2500, "commerce", "100000"),
@@ -379,8 +459,13 @@ export const feedRegistry: FeedMetadata[] = [
   // token-safety delisted 2026-06-12 — NOT in this registry (so it has no payment
   // gate). Its route in index.ts is a 410-Gone stub (fails closed, serves no data)
   // until the ts-v1 provider contract is finalized and it is re-added here WITH a gate.
-  // liquidation-stream: per-KB priced on expectedSizeBytes=1620 (~$0.008) — market data.
-  bespokeFeed("liquidation-stream", "Liquidation Stream Oracle", "Hawkes branching-ratio (self-excitation) verdict over a first-party realized-liquidation archive: SUBCRITICAL/NEAR_CRITICAL/SUPERCRITICAL.", "on-demand", 1620, "financial"),
+  // liquidation-stream DELISTED 2026-07-28 (founder-approved, in-session): the
+  // realized-liquidation collector has been dead since 2026-06-12 (no live
+  // venue legs — see byte-liquidation-stream-api.service healthz
+  // archive_days=[2026-06-09,2026-06-12]), so a paid query can only answer
+  // INSUFFICIENT_DATA off a 7-week-stale archive. Its route in index.ts is now
+  // a 410-Gone stub. NOT in this registry — no payment gate — until the
+  // collector is restored with a live venue feed.
   // positioning-snapshot: per-KB priced on expectedSizeBytes=7480 (~$0.037) — market data.
   bespokeFeed("positioning-snapshot", "Positioning Snapshot Oracle", "Cross-venue perp positioning (funding + open interest) from Hyperliquid, dYdX v4, Aevo; raw fields, abstains honestly where a venue lacks data.", "on-demand", 7480, "financial"),
   // agent-compute, agent-memory, agent-tools (Agent-Infrastructure Index) delisted 2026-07-03 (concentration cut)
