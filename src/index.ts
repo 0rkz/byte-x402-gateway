@@ -317,8 +317,10 @@ function getExtensions(feedId: string, isPost: boolean): Record<string, unknown>
 // /.well-known/x402.json and agent.json unchanged; the challenge carries a
 // compact form that POINTS to it. Keep any entry here well under ~300 chars.
 const PAYMENT_CHALLENGE_DESCRIPTION: Record<string, string> = {
+  // Wording: FD-drafted, founder-approved verbatim 2026-07-29 — both material
+  // disclosures inline at the pay decision, pointer for the full text.
   "merchant-screen":
-    "Pre-settlement merchant/storefront screen: signed ALLOW/WARN/BLOCK on (domain, payTo, observed price) before an agent settles an x402 payment. Full methodology + data-retention and egress disclosure: see the merchant-screen entry at https://x402.payperbyte.io/feeds",
+    "Pre-settlement merchant screen: signed ALLOW/WARN/BLOCK on (domain, payTo, price) before you settle. Queries are logged (domain, payTo, price); screening is not covert — the merchant sees the probe. Full disclosure: https://x402.payperbyte.io/feeds",
 };
 
 const paymentRoutes: Record<string, any> = {};
