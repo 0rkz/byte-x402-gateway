@@ -643,6 +643,21 @@ app.use((req, res, next) => {
       } catch (e) {
         console.warn(`[x402-inbound]   decode FAILED: ${e instanceof Error ? e.message : String(e)}`);
       }
+      // Outbound side: the middleware's silent catch puts the real exception
+      // message into the re-challenge's .error field (and logs nothing) —
+      // sniff it off the response header so the journal finally carries it.
+      const origSetHeader = res.setHeader.bind(res);
+      (res as any).setHeader = (name: string, value: unknown) => {
+        if (String(name).toLowerCase() === "payment-required") {
+          try {
+            const d = JSON.parse(Buffer.from(String(value), "base64").toString("utf8"));
+            console.warn(`[x402-inbound]   OUT .error=${JSON.stringify(d?.error ?? null).slice(0, 500)}`);
+          } catch {
+            /* sniff only — never interfere */
+          }
+        }
+        return origSetHeader(name as string, value as never);
+      };
     }
   }
   if (activePaymentMiddleware) return activePaymentMiddleware(req, res, next);
