@@ -627,6 +627,23 @@ app.use((req, res, next) => {
     console.log(
       `[x402-inbound] POST ${req.path} payment-signature=${ps ? `present(${String(ps).length}b)` : "ABSENT"} x-payment=${xp ? `present(${String(xp).length}b)` : "absent"}`,
     );
+    // Inline decode diagnostic (structure only — never signature/key values):
+    // mirrors extractPayment's regex+parse to show exactly where extraction dies.
+    if (ps) {
+      try {
+        const raw = String(ps);
+        const b64ok = /^[A-Za-z0-9+/]*={0,2}$/.test(raw);
+        const dec = JSON.parse(Buffer.from(raw, "base64").toString("utf8"));
+        const topKeys = Object.keys(dec);
+        const extraKeys = topKeys.filter((k) => !["x402Version", "scheme", "network", "payload"].includes(k));
+        console.log(
+          `[x402-inbound]   decode: b64regex=${b64ok} keys=${JSON.stringify(topKeys)} v=${dec.x402Version} scheme=${dec.scheme} network=${dec.network} ` +
+            `payloadKeys=${JSON.stringify(Object.keys(dec.payload ?? {}))} extraSizes=${JSON.stringify(extraKeys.map((k) => [k, JSON.stringify(dec[k]).length]))}`,
+        );
+      } catch (e) {
+        console.warn(`[x402-inbound]   decode FAILED: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
   }
   if (activePaymentMiddleware) return activePaymentMiddleware(req, res, next);
   if (isPaidRoute(req)) {
