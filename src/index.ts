@@ -508,6 +508,44 @@ async function setupPaymentMiddleware(): Promise<boolean> {
     // throws — caught below, reported as false, and retried.
     await server.initialize();
 
+    // FORENSICS (FD spec 2026-07-29): the middleware re-402s payment rejections
+    // SILENTLY — core carries VerifyError.invalidReason/invalidMessage/payer and
+    // none of it ever reached the journal, which twice tonight turned five-minute
+    // questions into investigations. Wrap the two route-specific rejection points
+    // (requirement matching + verify) and log UNCONDITIONALLY on the failure
+    // branch — an empty reason is itself a finding, so no truthiness guard.
+    // Nothing sensitive is logged: payer/amounts are public on-chain data;
+    // signatures and key material never appear.
+    {
+      const srv = server as any;
+      const origMatch = srv.findMatchingRequirements.bind(server);
+      srv.findMatchingRequirements = (avail: any[], payload: any) => {
+        const m = origMatch(avail, payload);
+        if (!m) {
+          const auth = payload?.payload?.authorization ?? {};
+          console.warn(
+            `[x402-verify] NO-MATCH payer=${auth.from ?? "?"} sent={scheme:${payload?.scheme},network:${payload?.network},v:${payload?.x402Version}} ` +
+              `available=${JSON.stringify((avail ?? []).map((a: any) => ({ scheme: a.scheme, network: a.network, amount: a.amount, asset: a.asset, payTo: a.payTo })))}`,
+          );
+        }
+        return m;
+      };
+      const origVerify = srv.verifyPayment.bind(server);
+      srv.verifyPayment = async (payload: any, req: any, ext?: unknown, ctx?: any) => {
+        const r = await origVerify(payload, req, ext, ctx);
+        if (!r || r.isValid === false) {
+          const auth = payload?.payload?.authorization ?? {};
+          console.warn(
+            `[x402-verify] REJECTED route=${ctx?.request?.path ?? "?"} reason=${JSON.stringify(r?.invalidReason ?? null)} ` +
+              `message=${JSON.stringify(r?.invalidMessage ?? null)} payer=${r?.payer ?? auth.from ?? "?"} ` +
+              `matched={scheme:${req?.scheme},network:${req?.network},amount:${req?.amount},asset:${req?.asset},payTo:${req?.payTo}} ` +
+              `sent={to:${auth.to ?? "?"},value:${auth.value ?? "?"},validBefore:${auth.validBefore ?? "?"}}`,
+          );
+        }
+        return r;
+      };
+    }
+
     activePaymentMiddleware = paymentMiddleware(paymentRoutes, server, undefined, undefined, false);
     return true;
   } catch (e) {
