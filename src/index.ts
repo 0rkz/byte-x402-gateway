@@ -308,13 +308,26 @@ function getExtensions(feedId: string, isPost: boolean): Record<string, unknown>
   };
 }
 
+// 402-CHALLENGE description overrides (2026-07-29 root cause): clients echo the
+// challenge's `resource` back inside their payment envelope, and CDP's verify
+// schema 400s the whole payload when that echo is too large — merchant-screen's
+// 924-char catalog description made every paid replay fail verify SILENTLY
+// ("'paymentPayload' is invalid"). The full description INCLUDING the founder-
+// approved retention/egress disclosure stays on /feeds, /openapi.json,
+// /.well-known/x402.json and agent.json unchanged; the challenge carries a
+// compact form that POINTS to it. Keep any entry here well under ~300 chars.
+const PAYMENT_CHALLENGE_DESCRIPTION: Record<string, string> = {
+  "merchant-screen":
+    "Pre-settlement merchant/storefront screen: signed ALLOW/WARN/BLOCK on (domain, payTo, observed price) before an agent settles an x402 payment. Full methodology + data-retention and egress disclosure: see the merchant-screen entry at https://x402.payperbyte.io/feeds",
+};
+
 const paymentRoutes: Record<string, any> = {};
 for (const feed of feedRegistry) {
   const accepts = buildAccepts(feed.priceAtomic);
   if (POST_ORACLES.has(feed.id)) {
     paymentRoutes[`POST ${feed.endpoint}`] = {
       accepts,
-      description: feed.description,
+      description: PAYMENT_CHALLENGE_DESCRIPTION[feed.id] ?? feed.description,
       // Paid 200 is JSON — declare it so the 402 challenge's mimeType isn't "".
       mimeType: "application/json",
       extensions: getExtensions(feed.id, true),
@@ -651,7 +664,7 @@ app.use((req, res, next) => {
         if (String(name).toLowerCase() === "payment-required") {
           try {
             const d = JSON.parse(Buffer.from(String(value), "base64").toString("utf8"));
-            console.warn(`[x402-inbound]   OUT .error=${JSON.stringify(d?.error ?? null).slice(0, 500)}`);
+            console.warn(`[x402-inbound]   OUT .error=${JSON.stringify(d?.error ?? null).slice(0, 2000)}`);
           } catch {
             /* sniff only — never interfere */
           }
