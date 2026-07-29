@@ -473,6 +473,59 @@ function feedMethods(feed: { id: string; publisher?: string }): ("GET" | "POST")
   return ms;
 }
 
+// ── x402 forensics tiering (2026-07-29) ────────────────────────────────────
+// Two tiers, deliberately not one switch:
+//   HOT (always on)  — payment verify rejections, plus any outbound re-challenge
+//                      .error that is NOT boilerplate. A rejection nobody can
+//                      see is a rejection nobody can fix; these are the lines
+//                      that turn a silent 402 loop into a five-minute answer.
+//   VERBOSE (opt-in) — inbound payment-header presence + envelope structure.
+//                      One or two lines on EVERY gated POST, so they are pure
+//                      journal weight once an investigation closes.
+// Neither tier logs a header value, a signature, or key material.
+const FORENSIC_VERBOSE = ["1", "true", "yes", "on"].includes(
+  (process.env.X402_FORENSIC_VERBOSE || "").trim().toLowerCase(),
+);
+
+// The two challenge .error strings @x402/core emits on paths the HOT tier
+// already covers in full: "Payment required" (header absent or undecodable —
+// core itself warns on the undecodable case) and "No matching payment
+// requirements" (our NO-MATCH line carries the whole requirement diff).
+// Re-printing them adds nothing and buries the one line that matters.
+const BOILERPLATE_CHALLENGE_ERRORS = new Set([
+  "Payment required",
+  "No matching payment requirements",
+]);
+
+// Per-request record of the invalidReasons the HOT verify logger already
+// printed. `invalidReason` is a free-form string in core, not an enum, so it
+// cannot be listed statically — it is stamped on the Express req (which core
+// hands back through transportContext.request.adapter.req) and read again by
+// the outbound sniffer on that same request. Request-scoped, so concurrent
+// payers never read each other's reasons.
+const HOT_LOGGED_REASONS = Symbol.for("byte.x402.hotLoggedReasons");
+
+/** Record an invalidReason the HOT tier printed, so the sniffer skips its echo. */
+function markHotLogged(ctx: any, reason: unknown): void {
+  if (typeof reason !== "string" || reason === "") return;
+  const req = ctx?.request?.adapter?.req;
+  if (!req || typeof req !== "object") return;
+  const seen: unknown = req[HOT_LOGGED_REASONS];
+  if (seen instanceof Set) seen.add(reason);
+  else req[HOT_LOGGED_REASONS] = new Set([reason]);
+}
+
+/** True when an outbound challenge .error carries nothing the HOT tier missed. */
+function isBoilerplateChallengeError(err: unknown, req: any): boolean {
+  if (err === null || err === undefined) return true; // no .error field at all
+  if (typeof err !== "string") return false; // an unexpected shape IS a finding
+  const s = err.trim();
+  if (s === "") return true;
+  if (BOILERPLATE_CHALLENGE_ERRORS.has(s)) return true;
+  const seen: unknown = req?.[HOT_LOGGED_REASONS];
+  return seen instanceof Set && seen.has(s);
+}
+
 /**
  * Build the x402 payment middleware. Returns true on success, false (rather
  * than throwing) if the facilitator is unreachable — so the caller can retry.
@@ -523,42 +576,69 @@ async function setupPaymentMiddleware(): Promise<boolean> {
     // throws — caught below, reported as false, and retried.
     await server.initialize();
 
-    // FORENSICS (FD spec 2026-07-29): the middleware re-402s payment rejections
-    // SILENTLY — core carries VerifyError.invalidReason/invalidMessage/payer and
-    // none of it ever reached the journal, which twice tonight turned five-minute
-    // questions into investigations. Wrap the two route-specific rejection points
-    // (requirement matching + verify) and log UNCONDITIONALLY on the failure
-    // branch — an empty reason is itself a finding, so no truthiness guard.
+    // FORENSICS — HOT tier (FD spec 2026-07-29): the middleware re-402s payment
+    // rejections SILENTLY — core carries VerifyError.invalidReason/invalidMessage/
+    // payer and none of it ever reached the journal, which twice on 07-29 turned
+    // five-minute questions into investigations. Wrap the two route-specific
+    // rejection points (requirement matching + verify) and log UNCONDITIONALLY on
+    // the failure branch — an empty reason is itself a finding, so no truthiness
+    // guard, and never behind X402_FORENSIC_VERBOSE.
     // Nothing sensitive is logged: payer/amounts are public on-chain data;
     // signatures and key material never appear.
+    //
+    // Existence-guarded because these are @x402/core INTERNALS, not public API.
+    // Unguarded, a core rename makes `.bind` throw right here — inside a try
+    // whose catch reports "middleware not ready", so every paid route would
+    // fail closed (503) on the strength of a purely diagnostic wrapper.
+    // Forensics never takes the revenue path down: if the seam moves we log
+    // that the probe was lost and leave payment handling untouched.
     {
       const srv = server as any;
-      const origMatch = srv.findMatchingRequirements.bind(server);
-      srv.findMatchingRequirements = (avail: any[], payload: any) => {
-        const m = origMatch(avail, payload);
-        if (!m) {
-          const auth = payload?.payload?.authorization ?? {};
-          console.warn(
-            `[x402-verify] NO-MATCH payer=${auth.from ?? "?"} sent={scheme:${payload?.scheme},network:${payload?.network},v:${payload?.x402Version}} ` +
-              `available=${JSON.stringify((avail ?? []).map((a: any) => ({ scheme: a.scheme, network: a.network, amount: a.amount, asset: a.asset, payTo: a.payTo })))}`,
-          );
-        }
-        return m;
-      };
-      const origVerify = srv.verifyPayment.bind(server);
-      srv.verifyPayment = async (payload: any, req: any, ext?: unknown, ctx?: any) => {
-        const r = await origVerify(payload, req, ext, ctx);
-        if (!r || r.isValid === false) {
-          const auth = payload?.payload?.authorization ?? {};
-          console.warn(
-            `[x402-verify] REJECTED route=${ctx?.request?.path ?? "?"} reason=${JSON.stringify(r?.invalidReason ?? null)} ` +
-              `message=${JSON.stringify(r?.invalidMessage ?? null)} payer=${r?.payer ?? auth.from ?? "?"} ` +
-              `matched={scheme:${req?.scheme},network:${req?.network},amount:${req?.amount},asset:${req?.asset},payTo:${req?.payTo}} ` +
-              `sent={to:${auth.to ?? "?"},value:${auth.value ?? "?"},validBefore:${auth.validBefore ?? "?"}}`,
-          );
-        }
-        return r;
-      };
+
+      if (typeof srv.findMatchingRequirements === "function") {
+        const origMatch = srv.findMatchingRequirements.bind(server);
+        srv.findMatchingRequirements = (avail: any[], payload: any) => {
+          const m = origMatch(avail, payload);
+          if (!m) {
+            const auth = payload?.payload?.authorization ?? {};
+            console.warn(
+              `[x402-verify] NO-MATCH payer=${auth.from ?? "?"} sent={scheme:${payload?.scheme},network:${payload?.network},v:${payload?.x402Version}} ` +
+                `available=${JSON.stringify((avail ?? []).map((a: any) => ({ scheme: a?.scheme, network: a?.network, amount: a?.amount, asset: a?.asset, payTo: a?.payTo })))}`,
+            );
+          }
+          return m;
+        };
+      } else {
+        console.warn(
+          "[x402-verify] probe NOT installed: x402ResourceServer.findMatchingRequirements is " +
+            "missing — payment matching is UNAFFECTED, but NO-MATCH rejections are silent again.",
+        );
+      }
+
+      if (typeof srv.verifyPayment === "function") {
+        const origVerify = srv.verifyPayment.bind(server);
+        srv.verifyPayment = async (payload: any, req: any, ext?: unknown, ctx?: any) => {
+          const r = await origVerify(payload, req, ext, ctx);
+          if (!r || r.isValid === false) {
+            const auth = payload?.payload?.authorization ?? {};
+            // Stamp the reason before the challenge is written, so the outbound
+            // sniffer can tell core's echo of THIS line from a new finding.
+            markHotLogged(ctx, r?.invalidReason);
+            console.warn(
+              `[x402-verify] REJECTED route=${ctx?.request?.path ?? "?"} reason=${JSON.stringify(r?.invalidReason ?? null)} ` +
+                `message=${JSON.stringify(r?.invalidMessage ?? null)} payer=${r?.payer ?? auth.from ?? "?"} ` +
+                `matched={scheme:${req?.scheme},network:${req?.network},amount:${req?.amount},asset:${req?.asset},payTo:${req?.payTo}} ` +
+                `sent={to:${auth.to ?? "?"},value:${auth.value ?? "?"},validBefore:${auth.validBefore ?? "?"}}`,
+            );
+          }
+          return r;
+        };
+      } else {
+        console.warn(
+          "[x402-verify] probe NOT installed: x402ResourceServer.verifyPayment is missing — " +
+            "verification is UNAFFECTED, but verify rejections are silent again.",
+        );
+      }
     }
 
     activePaymentMiddleware = paymentMiddleware(paymentRoutes, server, undefined, undefined, false);
@@ -631,42 +711,71 @@ app.use((req, res, next) => {
 // ready, which served every paid feed for free if the facilitator was missed
 // at startup. That silent revenue hole is the regression this fixes.
 app.use((req, res, next) => {
-  // FORENSICS (2026-07-29, merchant-screen 402-loop): log what payment header
-  // (if any) actually ARRIVES on gated POSTs, upstream of the middleware —
-  // extractPayment reads PAYMENT-SIGNATURE and falls through to the unpaid
-  // branch silently when it is absent, which is indistinguishable from an
-  // unpaid probe without this line. Length only, never the header value.
   if (req.method === "POST" && isPaidRoute(req)) {
     const ps = req.headers["payment-signature"];
-    const xp = req.headers["x-payment"];
-    console.log(
-      `[x402-inbound] POST ${req.path} payment-signature=${ps ? `present(${String(ps).length}b)` : "ABSENT"} x-payment=${xp ? `present(${String(xp).length}b)` : "absent"}`,
-    );
-    // Inline decode diagnostic (structure only — never signature/key values):
-    // mirrors extractPayment's regex+parse to show exactly where extraction dies.
-    if (ps) {
-      try {
-        const raw = String(ps);
-        const b64ok = /^[A-Za-z0-9+/]*={0,2}$/.test(raw);
-        const dec = JSON.parse(Buffer.from(raw, "base64").toString("utf8"));
-        const topKeys = Object.keys(dec);
-        const extraKeys = topKeys.filter((k) => !["x402Version", "scheme", "network", "payload"].includes(k));
-        console.log(
-          `[x402-inbound]   decode: b64regex=${b64ok} keys=${JSON.stringify(topKeys)} v=${dec.x402Version} scheme=${dec.scheme} network=${dec.network} ` +
-            `payloadKeys=${JSON.stringify(Object.keys(dec.payload ?? {}))} extraSizes=${JSON.stringify(extraKeys.map((k) => [k, JSON.stringify(dec[k]).length]))}`,
-        );
-      } catch (e) {
-        console.warn(`[x402-inbound]   decode FAILED: ${e instanceof Error ? e.message : String(e)}`);
+
+    // FORENSICS — VERBOSE tier (2026-07-29, merchant-screen 402-loop): what
+    // payment header (if any) actually ARRIVES on a gated POST, and how the
+    // envelope is shaped, upstream of the middleware. extractPayment reads
+    // PAYMENT-SIGNATURE and falls through to the unpaid branch silently when it
+    // is absent OR undecodable, which without these lines is indistinguishable
+    // from an unpaid probe. They fire on every gated POST though, so once an
+    // investigation closes they are noise: opt in with X402_FORENSIC_VERBOSE=1.
+    // Lengths and key names only — never a header value, signature, or key.
+    if (FORENSIC_VERBOSE) {
+      const xp = req.headers["x-payment"];
+      console.log(
+        `[x402-inbound] POST ${req.path} payment-signature=${ps ? `present(${String(ps).length}b)` : "ABSENT"} x-payment=${xp ? `present(${String(xp).length}b)` : "absent"}`,
+      );
+      // Inline decode diagnostic (structure only — never signature/key values):
+      // mirrors extractPayment's regex+parse to show exactly where extraction dies.
+      if (ps) {
+        try {
+          const raw = String(ps);
+          const b64ok = /^[A-Za-z0-9+/]*={0,2}$/.test(raw);
+          const dec: unknown = JSON.parse(Buffer.from(raw, "base64").toString("utf8"));
+          // Shape-guard before keying it: a bare JSON scalar decodes fine and
+          // then throws in Object.keys — which the catch below would report as
+          // "decode FAILED" when the decode in fact succeeded. Say what's true.
+          if (dec === null || typeof dec !== "object") {
+            console.warn(
+              `[x402-inbound]   decode: b64regex=${b64ok} NOT-AN-OBJECT (${dec === null ? "null" : typeof dec})`,
+            );
+          } else {
+            const d = dec as Record<string, unknown>;
+            const topKeys = Object.keys(d);
+            const extraKeys = topKeys.filter((k) => !["x402Version", "scheme", "network", "payload"].includes(k));
+            const payload = d.payload;
+            console.log(
+              `[x402-inbound]   decode: b64regex=${b64ok} keys=${JSON.stringify(topKeys)} v=${d.x402Version} scheme=${d.scheme} network=${d.network} ` +
+                `payloadKeys=${JSON.stringify(payload && typeof payload === "object" ? Object.keys(payload) : [])} ` +
+                `extraSizes=${JSON.stringify(extraKeys.map((k) => [k, String(JSON.stringify(d[k])).length]))}`,
+            );
+          }
+        } catch (e) {
+          console.warn(`[x402-inbound]   decode FAILED: ${e instanceof Error ? e.message : String(e)}`);
+        }
       }
-      // Outbound side: the middleware's silent catch puts the real exception
-      // message into the re-challenge's .error field (and logs nothing) —
-      // sniff it off the response header so the journal finally carries it.
+    }
+
+    // FORENSICS — HOT tier: the middleware's silent catch puts the real
+    // exception message into the re-challenge's .error field and logs NOTHING;
+    // that field is what identified the CDP schema rejection on 07-29, so it
+    // stays live regardless of X402_FORENSIC_VERBOSE. Sniff it off the response
+    // header, but print only what the HOT verify logger did not already print —
+    // core echoes its own invalidReason (and two fixed boilerplate strings) into
+    // this field on every unpaid retry, which would bury the line that matters.
+    // Installed only when a payment header actually arrived: with no header the
+    // challenge is unconditional boilerplate. Sniff only, never interfere.
+    if (ps) {
       const origSetHeader = res.setHeader.bind(res);
       (res as any).setHeader = (name: string, value: unknown) => {
         if (String(name).toLowerCase() === "payment-required") {
           try {
             const d = JSON.parse(Buffer.from(String(value), "base64").toString("utf8"));
-            console.warn(`[x402-inbound]   OUT .error=${JSON.stringify(d?.error ?? null).slice(0, 2000)}`);
+            if (!isBoilerplateChallengeError(d?.error, req)) {
+              console.warn(`[x402-inbound]   OUT .error=${String(JSON.stringify(d.error)).slice(0, 2000)}`);
+            }
           } catch {
             /* sniff only — never interfere */
           }
