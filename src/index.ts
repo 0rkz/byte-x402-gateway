@@ -483,19 +483,36 @@ function feedMethods(feed: { id: string; publisher?: string }): ("GET" | "POST")
 //                      One or two lines on EVERY gated POST, so they are pure
 //                      journal weight once an investigation closes.
 // Neither tier logs a header value, a signature, or key material.
-const FORENSIC_VERBOSE = ["1", "true", "yes", "on"].includes(
-  (process.env.X402_FORENSIC_VERBOSE || "").trim().toLowerCase(),
-);
+/**
+ * Verbose tier, read PER REQUEST rather than once at module load: turning it on
+ * must not require restarting the very gateway you are trying to observe. A
+ * restart destroys the in-flight incident and re-races the facilitator startup,
+ * so a module-load-once read makes the flag useless exactly when it is needed.
+ */
+function forensicVerbose(): boolean {
+  return ["1", "true", "yes", "on"].includes(
+    (process.env.X402_FORENSIC_VERBOSE || "").trim().toLowerCase(),
+  );
+}
 
-// The two challenge .error strings @x402/core emits on paths the HOT tier
-// already covers in full: "Payment required" (header absent or undecodable —
-// core itself warns on the undecodable case) and "No matching payment
-// requirements" (our NO-MATCH line carries the whole requirement diff).
-// Re-printing them adds nothing and buries the one line that matters.
-const BOILERPLATE_CHALLENGE_ERRORS = new Set([
-  "Payment required",
-  "No matching payment requirements",
-]);
+// True only once the findMatchingRequirements probe has actually installed.
+// The static suppression of core's "No matching payment requirements" echo is
+// valid ONLY while that probe is live: if a core rename drops it, the HOT
+// NO-MATCH line is guarded off AND an unconditional static suppression would
+// keep the sniffer quiet about core's echo too — leaving a no-match rejection
+// invisible on BOTH paths, the exact silence these forensics exist to prevent.
+// Gating on this flag makes the static path degrade the same way the dynamic
+// (per-request stamped) path already does.
+let matchProbeInstalled = false;
+
+// ALWAYS boilerplate, independent of probe state: core emits "Payment required"
+// whenever the payment header is absent or undecodable, and warns about the
+// undecodable case itself — there is nothing for us to add either way.
+const ALWAYS_BOILERPLATE_ERRORS = new Set(["Payment required"]);
+
+// Boilerplate ONLY while the match probe is installed — core echoes this string
+// into .error on precisely the path our NO-MATCH line already reports in full.
+const MATCH_PROBE_ECHO = "No matching payment requirements";
 
 // Per-request record of the invalidReasons the HOT verify logger already
 // printed. `invalidReason` is a free-form string in core, not an enum, so it
@@ -521,7 +538,11 @@ function isBoilerplateChallengeError(err: unknown, req: any): boolean {
   if (typeof err !== "string") return false; // an unexpected shape IS a finding
   const s = err.trim();
   if (s === "") return true;
-  if (BOILERPLATE_CHALLENGE_ERRORS.has(s)) return true;
+  if (ALWAYS_BOILERPLATE_ERRORS.has(s)) return true;
+  // Suppress core's echo of our own NO-MATCH line only while we are actually
+  // emitting that line. If the probe is gone, let the echo through: a duplicated
+  // line costs nothing, a silently dropped rejection costs an investigation.
+  if (s === MATCH_PROBE_ECHO) return matchProbeInstalled;
   const seen: unknown = req?.[HOT_LOGGED_REASONS];
   return seen instanceof Set && seen.has(s);
 }
@@ -597,6 +618,7 @@ async function setupPaymentMiddleware(): Promise<boolean> {
 
       if (typeof srv.findMatchingRequirements === "function") {
         const origMatch = srv.findMatchingRequirements.bind(server);
+        matchProbeInstalled = true;
         srv.findMatchingRequirements = (avail: any[], payload: any) => {
           const m = origMatch(avail, payload);
           if (!m) {
@@ -722,7 +744,7 @@ app.use((req, res, next) => {
     // from an unpaid probe. They fire on every gated POST though, so once an
     // investigation closes they are noise: opt in with X402_FORENSIC_VERBOSE=1.
     // Lengths and key names only — never a header value, signature, or key.
-    if (FORENSIC_VERBOSE) {
+    if (forensicVerbose()) {
       const xp = req.headers["x-payment"];
       console.log(
         `[x402-inbound] POST ${req.path} payment-signature=${ps ? `present(${String(ps).length}b)` : "ABSENT"} x-payment=${xp ? `present(${String(xp).length}b)` : "absent"}`,
@@ -1298,6 +1320,30 @@ function safeUpstreamDetail(rawBody: string): string {
   return "upstream error";
 }
 
+/**
+ * Log a paid proxy's CONNECTION failure. Closes the coverage gap the monitor
+ * documents: a non-ok upstream RESPONSE is logged ("upstream non-ok <status>"),
+ * but a pure connection failure — ECONNREFUSED, ETIMEDOUT, ENOTFOUND, an abort
+ * — hit each handler's catch and logged NOTHING, so "unit up, TCP refuses" was
+ * invisible in the journal and to any sensor reading it. That is the likeliest
+ * next silent outage now that the GET feeds are single-sourced on their live
+ * companions.
+ *
+ * Marker is deliberately distinct from "upstream non-ok" and grep-stable, so a
+ * sensor can count the two classes separately.
+ *
+ * Logs the feed id and the ERROR CLASS only — never a body, URL, header, or key.
+ * `fetch()` reports connection faults as TypeError("fetch failed") with the real
+ * code on `.cause`, so the cause chain is read first; the message itself is NOT
+ * logged because it can carry the upstream host/port (the R4 leak class this
+ * file already guards on the response path).
+ */
+function logUpstreamUnreachable(feed: string, err: unknown): void {
+  const e = err as { code?: unknown; name?: unknown; cause?: { code?: unknown; name?: unknown } };
+  const cls = e?.cause?.code ?? e?.code ?? e?.cause?.name ?? e?.name ?? "unknown";
+  console.error(`[x402-gateway] upstream unreachable: feed=${feed} class=${String(cls)}`);
+}
+
 // ---------------------------------------------------------------------------
 // Paid Endpoints
 // ---------------------------------------------------------------------------
@@ -1384,6 +1430,7 @@ app.post("/feeds/address-reputation", async (req, res) => {
       res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
+    logUpstreamUnreachable("address-reputation", err);
     res.status(502).json({ error: "address-reputation proxy failed", detail: "upstream unavailable" });
   }
 });
@@ -1414,6 +1461,7 @@ app.post("/feeds/merchant-screen", async (req, res) => {
       res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
+    logUpstreamUnreachable("merchant-screen", err);
     res.status(502).json({ error: "merchant-screen proxy failed", detail: "upstream unavailable" });
   }
 });
@@ -1446,6 +1494,7 @@ app.post("/feeds/pkg-verdict", async (req, res) => {
       res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
+    logUpstreamUnreachable("pkg-verdict", err);
     res.status(502).json({ error: "pkg-verdict proxy failed", detail: "upstream unavailable" });
   }
 });
@@ -1476,6 +1525,7 @@ app.post("/feeds/sanctions-screen", async (req, res) => {
       res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
+    logUpstreamUnreachable("sanctions-screen", err);
     res.status(502).json({ error: "sanctions-screen proxy failed", detail: "upstream unavailable" });
   }
 });
@@ -1510,6 +1560,7 @@ app.post("/feeds/reasoning-verdict", async (req, res) => {
       res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
+    logUpstreamUnreachable("reasoning-verdict", err);
     res.status(502).json({ error: "reasoning-verdict proxy failed", detail: "upstream unavailable" });
   }
 });
@@ -1544,6 +1595,7 @@ app.post("/feeds/runtime-eol", async (req, res) => {
       res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
+    logUpstreamUnreachable("runtime-eol", err);
     res.status(502).json({ error: "runtime-eol gate proxy failed", detail: "upstream unavailable" });
   }
 });
@@ -1578,6 +1630,7 @@ app.post("/feeds/threat-intel", async (req, res) => {
       res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
+    logUpstreamUnreachable("threat-intel", err);
     res.status(502).json({ error: "threat-intel gate proxy failed", detail: "upstream unavailable" });
   }
 });
@@ -1658,6 +1711,7 @@ app.post("/feeds/positioning-snapshot", async (req, res) => {
       res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
+    logUpstreamUnreachable("positioning-snapshot", err);
     res.status(502).json({ error: "positioning-snapshot proxy failed", detail: "upstream unavailable" });
   }
 });
@@ -1709,6 +1763,7 @@ for (const feed of feedRegistry) {
         await sendAttested(res, payload);
       }
     } catch (err: any) {
+      logUpstreamUnreachable(slug, err);
       res.status(502).json({ error: `Failed to fetch ${slug}`, detail: "upstream unavailable" });
     }
   });
