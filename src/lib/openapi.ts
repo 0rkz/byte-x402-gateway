@@ -39,7 +39,7 @@ import { config, feedRegistry, networkInfo } from "./config.js";
 // buildOpenApiDoc()'s explicit `feed("liquidation-stream")` lookup throws
 // (feedRegistry has no entry for it), 500ing the free /openapi.json route —
 // caught by gate-engagement-check.mjs's free-route-reachable assertion.
-const POST_ORACLE_IDS = new Set(["address-reputation", "pkg-verdict", "sanctions-screen", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel"]);
+const POST_ORACLE_IDS = new Set(["address-reputation", "pkg-verdict", "sanctions-screen", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel", "merchant-screen"]);
 
 /** Per-oracle request-body schema, keyed by feed id. Each oracle takes a
  *  different question/claim/citation field plus optional on-chain delivery
@@ -170,6 +170,16 @@ export const ORACLE_REQUEST_SCHEMAS: Record<string, Record<string, unknown>> = {
     required: ["address"],
     anyOf: [{ required: ["domain"] }, { required: ["url"] }],
   },
+  "merchant-screen": {
+    type: "object",
+    required: ["domain"],
+    properties: {
+      domain: { type: "string", description: "The merchant host the agent is about to pay." },
+      address: { type: "string", pattern: "^0x[0-9a-fA-F]{40}$", description: "Optional — the payTo the agent observed." },
+      observed_price_atomic: { type: "string", pattern: "^[0-9]+$", description: "Optional — atomic USDC price quoted to the agent. STRING (may exceed 2^53; a JSON number is rejected upstream)." },
+      chain: { type: "string", enum: ["base"], default: "base" },
+    },
+  },
   "pkg-verdict": {
     type: "object",
     properties: {
@@ -274,6 +284,7 @@ export const ORACLE_REQUEST_EXAMPLES: Record<string, Record<string, unknown>> = 
   "evidence-pack": { claim: "USDC is fully reserved 1:1" },
   "usc-statute": { citation: "17 USC 107" },
   "address-reputation": { domain: "example.com", address: "0x1111111111111111111111111111111111111111", amount: 50000, chain: "base" },
+  "merchant-screen": { domain: "example.com", address: "0x1111111111111111111111111111111111111111", observed_price_atomic: "150000", chain: "base" },
   "pkg-verdict": { ecosystem: "npm", package: "left-pad" },
   // A name that actually hits the SDN list — paired with the BLOCK response
   // excerpt below, it demos the dated list pin end-to-end.
@@ -1186,9 +1197,59 @@ const evidencePackAnswerSchema = {
   required: ["type", "query", "sources", "disclaimer", "answered_at"],
 };
 
+// merchant-screen — data-feeds/merchant-screen/resolvers.py resolve() answer dict
+// (verified live 2026-07-28 against the real return shape, not the doc sketch).
+// Pre-settlement screen: signals are MEASURED live at query time (RDAP age, TLS
+// handshake, redirect probe, brand-clone distance vs a committed corpus), not a
+// static reputation lookup.
+const merchantScreenAnswerSchema = {
+  type: "object",
+  properties: {
+    v: { const: "merchant-screen/v1" },
+    ts: { type: "integer", description: "Unix seconds the verdict was produced." },
+    query: {
+      type: "object",
+      properties: {
+        domain: { type: "string" },
+        address: { type: ["string", "null"] },
+        observed_price_atomic: { type: ["string", "null"] },
+        chain: { type: "string" },
+      },
+    },
+    verdict: {
+      type: "string",
+      enum: ["ALLOW", "WARN", "BLOCK"],
+      description:
+        "Pre-settlement go/no-go: BLOCK = fresh-clone shape (near-clone of a known brand AND domain age <180d/unknown), no reachable HTTPS, or a hard price/payTo mismatch — do not settle. WARN = an unverified core signal (RDAP or TLS) caps confidence, or a soft price/payTo mismatch. ALLOW = no fresh-clone/fabricated-price shape found — evidence-toward, NEVER a certification of legitimacy.",
+    },
+    score: { type: "integer", minimum: 0, maximum: 100 },
+    reasons: { type: "array", items: { type: "string" } },
+    signals: {
+      type: "object",
+      description:
+        "Signal blocks measured live at query time. price_sanity is present ONLY when observed_price_atomic and/or address was supplied in the request — never a fabricated null block when absent.",
+      properties: {
+        domain_age_days: { type: "object", description: "RDAP domain-age lookup." },
+        tls: { type: "object", description: "Live TLS handshake: cert age, issuer, SAN match, has_https." },
+        redirect: { type: "object", description: "Off-domain redirect probe." },
+        clone_brand: { type: "object", description: "Brand-similarity distance vs a committed known-brand corpus (nearest_known_brand, distance, skeleton_hit)." },
+        price_sanity: { type: "object", description: "Merchant's own advertised x402 manifest price + payTo match, when a price and/or address was supplied." },
+        independence: { type: "object", description: "Static identity statement (not measured evidence — excluded from input_hashes)." },
+      },
+    },
+    retrieved_at: { type: "string", format: "date-time" },
+    methodology: { type: "string", description: "Frozen ruleset id, e.g. \"ms-v1\"." },
+    input_hashes: { type: "object", description: "Hashes of the MEASURED evidence blocks (independence excluded)." },
+    source: { type: "string" },
+    error: { type: ["string", "null"], description: "Set ONLY when BOTH core signal sources (RDAP and TLS) were unreachable — a single unverified signal instead degrades the ruleset to a WARN cap." },
+  },
+  required: ["v", "verdict", "score", "reasons", "signals", "methodology"],
+};
+
 const runtimeEolResponseSchema = syncResponseWith(runtimeEolAnswerSchema);
 const threatIntelResponseSchema = syncResponseWith(threatIntelAnswerSchema);
 const evidencePackResponseSchema = syncResponseWith(evidencePackAnswerSchema);
+const merchantScreenResponseSchema = syncResponseWith(merchantScreenAnswerSchema);
 const uscStatuteResponseSchema = syncResponseWith(uscStatuteAnswerSchema, {
   embeddedAttestation: false,
   noteDesc:
@@ -1203,6 +1264,7 @@ const ORACLE_RESPONSE_SCHEMAS: Record<string, object> = {
   "threat-intel": threatIntelResponseSchema,
   "evidence-pack": evidencePackResponseSchema,
   "usc-statute": uscStatuteResponseSchema,
+  "merchant-screen": merchantScreenResponseSchema,
 };
 
 /** Build the POST operation for a request-response oracle feed. */
@@ -1373,7 +1435,7 @@ export function buildOpenApiDoc() {
         "price (see x-payment-info per operation); the catalog at GET /feeds " +
         "(free, ungated) lists every feed with its computed price and " +
         "expected payload size. POST oracle endpoints (address-reputation, " +
-        "sanctions-screen, pkg-verdict, reasoning-verdict, " +
+        "sanctions-screen, pkg-verdict, reasoning-verdict, merchant-screen, " +
         "usc-statute, runtime-eol, threat-intel, " +
         "positioning-snapshot) require a JSON body and return their signed " +
         "answer SYNCHRONOUSLY in the 200 — see the requestBody/response schema " +
@@ -1583,6 +1645,7 @@ export function buildOpenApiDoc() {
         EvidencePackResponse: evidencePackResponseSchema,
         UscStatuteResponse: uscStatuteResponseSchema,
         AddressReputationResponse: addressReputationResponseSchema,
+        MerchantScreenResponse: merchantScreenResponseSchema,
         PkgVerdictResponse: pkgVerdictResponseSchema,
         SanctionsScreenResponse: sanctionsScreenResponseSchema,
         TokenSafetyResponse: tokenSafetyResponseSchema,

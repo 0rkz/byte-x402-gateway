@@ -90,6 +90,13 @@ export const config = {
    */
   sanctionsScreenUrl: process.env.SANCTIONS_SCREEN_URL || "http://127.0.0.1:8092",
   /**
+   * merchant-screen oracle URL — pre-settlement merchant/storefront screen
+   * (responds to the coinbase/x402 #225 fact-attestation ask). Runs on the
+   * same host (byte-merchant-screen.service, port 8098); NOT exposed via
+   * cloudflared — this paywalled gateway route is its only public surface.
+   */
+  merchantScreenUrl: process.env.MERCHANT_SCREEN_URL || "http://127.0.0.1:8098",
+  /**
    * liquidation-stream oracle URL — Hawkes cascade-risk regime oracle.
    * Runs on the same host (byte-liquidation-stream-api.service, port 8089);
    * NOT exposed via cloudflared — this paywalled gateway route is its only
@@ -200,13 +207,19 @@ export const FEED_LIVE_URL: Record<string, string> = {
  * for when a live companion service is itself down. Roughly 3x each feed's
  * own updateFrequency (see feedRegistry below): generous enough to tolerate
  * a slow-but-not-frozen cycle, tight enough to catch genuine multi-day
- * staleness. Feeds absent from this map (e.g. threat-intel) get NO staleness
- * check — only the universal null-data check in fetchFeedPayload applies —
- * so this is additive, not class-wide surgery.
+ * staleness. Feeds absent from this map get NO staleness check — only the
+ * universal null-data check in fetchFeedPayload applies — so this is
+ * additive, not class-wide surgery. (All four broadcast-backed paid feeds
+ * are now covered; threat-intel added 2026-07-29.)
  */
 export const FEED_STALE_AFTER_S: Record<string, number> = {
   weather: 3 * 3600,        // 3h (updateFrequency 3600s)
   earthquakes: 3 * 900,     // 45min (updateFrequency 900s)
+  // FD 2026-07-29: threat-intel was the ONLY archive-served paid feed with no
+  // staleness gate anywhere — the last feed still exposed to the original P1
+  // (frozen broadcaster ⇒ indefinitely-stale 200s). Margin verified live before
+  // adding: archive cadence 3604-3614s, age 1983s vs this 10800s tolerance.
+  "threat-intel": 3 * 3600, // 3h (updateFrequency 3600s)
   // FD 2026-07-28, L3: the catalog's updateFrequency for this feed said
   // "daily" (86400s), but data-feeds/runtime-eol/feed.py's actual broadcast
   // loop is INTERVAL = 21600 (6h) — the catalog string was corrected (see
@@ -456,6 +469,17 @@ export const feedRegistry: FeedMetadata[] = [
   // gets a signed ALLOW/WARN/BLOCK/ABSTAIN + reasons it verifies before acting. The
   // verdict is ADVISORY; the embedded EIP-712 receipt proves provenance, not correctness.
   customPricedFeed("reasoning-verdict", "Reasoning Verdict Oracle (local LLM)", "Verify-before-act risk oracle: POST an action context (message, payload, proposal, payee, tool-call) and get a signed ALLOW/WARN/BLOCK/ABSTAIN verdict + 0-100 safe-to-proceed score + reasons from a LOCAL model (no data egress). The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting. Advisory: the receipt proves provenance/integrity, not correctness.", "on-demand", 2200, "general", "100000"),
+  // merchant-screen: decision-priced $0.10, same tier as address-reputation/
+  // pkg-verdict/sanctions-screen/reasoning-verdict. Registered here 2026-07-28
+  // per GATEWAY_INTEGRATION.md step (b); the upstream service
+  // (byte-merchant-screen.service) is founder-gated on a provisioned
+  // MERCHANT_SCREEN_PUB_KEY — see the deploy runbook for the required
+  // pre-restart ordering (unit must show healthz ok:true BEFORE the gateway
+  // is restarted onto this registry entry, else every /query is a signed-
+  // refusal 503 by design — the service's own fail-closed contract).
+  customPricedFeed("merchant-screen", "Merchant Screen Oracle",
+    "Pre-settlement merchant screen: signed ALLOW/WARN/BLOCK on a (domain, payTo, observed price) BEFORE an agent settles an x402 payment. ms-v1 ruleset over first-party signals measured at query time — RDAP domain age, live TLS handshake (cert age, issuer, SAN match), off-domain redirect probe, brand-similarity distance vs a committed known-brand corpus, and the merchant's own advertised x402 manifest price. Method disclosed per field; unmeasurable signals report unverified and only lower confidence. The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting. Every query is logged and retained: the domain, the payTo address and price you supplied, the verdict, and a summary of the signals behind it. Producing a verdict requires live outbound requests against the screened domain itself — the merchant may observe this traffic; screening is not covert.",
+    "on-demand", 3200, "commerce", "100000"),
   // token-safety delisted 2026-06-12 — NOT in this registry (so it has no payment
   // gate). Its route in index.ts is a 410-Gone stub (fails closed, serves no data)
   // until the ts-v1 provider contract is finalized and it is re-added here WITH a gate.

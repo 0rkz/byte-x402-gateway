@@ -202,7 +202,7 @@ function buildAccepts(priceAtomic: string) {
 // in-session — see the delist comments in lib/config.ts feedRegistry and the
 // 410-Gone stubs below) — removed from POST_ORACLES so neither the payment
 // gate nor the body-validation middleware treats them as live.
-const POST_ORACLES = new Set(["address-reputation", "pkg-verdict", "sanctions-screen", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel"]);
+const POST_ORACLES = new Set(["address-reputation", "pkg-verdict", "sanctions-screen", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel", "merchant-screen"]);
 
 // ── Bazaar service metadata (PROD-15) ───────────────────────────────────────
 // CDP Bazaar catalogs `resource.serviceName` / `resource.tags` from the
@@ -230,6 +230,7 @@ const FEED_TAGS: Record<string, string[]> = {
   "address-reputation": ["payperbyte", "address-reputation", "payments-risk", "go-no-go", "signed-verdict"],
   "pkg-verdict": ["payperbyte", "pkg-verdict", "supply-chain", "install-gate", "signed-verdict"],
   "reasoning-verdict": ["payperbyte", "reasoning-verdict", "verify-before-act", "local-llm", "signed-verdict"],
+  "merchant-screen": ["payperbyte", "merchant-screen", "storefront-risk", "clone-detect", "signed-verdict"],
 };
 
 /** Tags for a feed's Bazaar row — curated when listed above, else derived from
@@ -764,6 +765,11 @@ const ORACLE_SIGNERS: Record<string, string> = Object.fromEntries(
       ["sanctions-screen", process.env.SANCTIONS_SCREEN_SIGNER],
       ["reasoning-verdict", process.env.REASONING_VERDICT_SIGNER],
       ["positioning-snapshot", process.env.POSITIONING_SNAPSHOT_SIGNER],
+      // merchant-screen: unset until the founder-provisioned MERCHANT_SCREEN_PUB_KEY
+      // lands and its corresponding address is safely read off byte-merchant-screen's
+      // own /healthz (never derived from key material in this session) — same
+      // "no hardcoded fallback" discipline as every other entry here.
+      ["merchant-screen", process.env.MERCHANT_SCREEN_SIGNER],
     ] as [string, string | undefined][]
   ).filter((entry): entry is [string, string] => Boolean(entry[1])),
 );
@@ -1173,6 +1179,36 @@ app.post("/feeds/address-reputation", async (req, res) => {
     }
   } catch (err: any) {
     res.status(502).json({ error: "address-reputation proxy failed", detail: "upstream unavailable" });
+  }
+});
+
+/** merchant-screen — pre-settlement merchant/storefront screen (x402 #225 ask).
+ *  Body: { domain: string, address?: 0x…, observed_price_atomic?: string, chain?: "base" }
+ *  200: { answer: { verdict, score, reasons, signals, … }, attestation: { … }, broadcast: { … disabled } }
+ *  Forwarded BYTE-FOR-BYTE (sendAttestedRaw): the gateway signs the identical bytes into
+ *  X-BYTE-Attestation, so the paid response carries the publisher's verdict receipt and
+ *  the gateway's transport receipt over the same bytes. `observed_price_atomic` is a
+ *  STRING upstream (may exceed 2^53) — never round-tripped through a JSON number here. */
+app.post("/feeds/merchant-screen", async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const upstream = await fetch(`${config.merchantScreenUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await upstream.text();
+    if (upstream.ok) {
+      await sendAttestedRaw(res, text);
+    } else {
+      // Do NOT forward the upstream's raw body/headers — it can carry the upstream
+      // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
+      // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
+      console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
+    }
+  } catch (err: any) {
+    res.status(502).json({ error: "merchant-screen proxy failed", detail: "upstream unavailable" });
   }
 });
 
