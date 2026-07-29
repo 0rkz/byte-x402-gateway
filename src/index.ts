@@ -616,6 +616,18 @@ app.use((req, res, next) => {
 // ready, which served every paid feed for free if the facilitator was missed
 // at startup. That silent revenue hole is the regression this fixes.
 app.use((req, res, next) => {
+  // FORENSICS (2026-07-29, merchant-screen 402-loop): log what payment header
+  // (if any) actually ARRIVES on gated POSTs, upstream of the middleware —
+  // extractPayment reads PAYMENT-SIGNATURE and falls through to the unpaid
+  // branch silently when it is absent, which is indistinguishable from an
+  // unpaid probe without this line. Length only, never the header value.
+  if (req.method === "POST" && isPaidRoute(req)) {
+    const ps = req.headers["payment-signature"];
+    const xp = req.headers["x-payment"];
+    console.log(
+      `[x402-inbound] POST ${req.path} payment-signature=${ps ? `present(${String(ps).length}b)` : "ABSENT"} x-payment=${xp ? `present(${String(xp).length}b)` : "absent"}`,
+    );
+  }
   if (activePaymentMiddleware) return activePaymentMiddleware(req, res, next);
   if (isPaidRoute(req)) {
     return res.status(503).json({
