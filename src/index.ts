@@ -552,6 +552,13 @@ function isBoilerplateChallengeError(err: unknown, req: any): boolean {
  * than throwing) if the facilitator is unreachable — so the caller can retry.
  */
 async function setupPaymentMiddleware(): Promise<boolean> {
+  // Reset per ATTEMPT, not per process. Every call builds a fresh resource
+  // server, and the retry loop calls this until one succeeds — so an attempt
+  // that installed the probe and then failed further down (or before a later
+  // attempt whose core no longer exposes the seam) must not leave the flag
+  // asserting a probe the live server does not have. Stale-true is the fail-open
+  // direction: it would suppress core's echo with no HOT line behind it.
+  matchProbeInstalled = false;
   try {
     // Facilitator auth is OFF by default (xpay self-hosted needs none), so this
     // is byte-for-byte the previous `new HTTPFacilitatorClient({ url })`. Setting
@@ -613,13 +620,21 @@ async function setupPaymentMiddleware(): Promise<boolean> {
     // fail closed (503) on the strength of a purely diagnostic wrapper.
     // Forensics never takes the revenue path down: if the seam moves we log
     // that the probe was lost and leave payment handling untouched.
+    //
+    // KNOWN GAP (2026-07-31, unfixed — deliberately out of scope of the cleanup
+    // that added the read-back below): the guard covers a seam that is MISSING,
+    // not one that is present-but-not-writable. Against a read-only property the
+    // ASSIGNMENT throws under "use strict", which lands in the outer catch and
+    // fails every paid route closed (503) on a diagnostic wrapper — exactly what
+    // the paragraph above says must never happen. Closing it means wrapping each
+    // probe install in its own try/catch; that changes revenue-path behaviour, so
+    // it is a separate, reviewed change rather than a nit.
     {
       const srv = server as any;
 
       if (typeof srv.findMatchingRequirements === "function") {
         const origMatch = srv.findMatchingRequirements.bind(server);
-        matchProbeInstalled = true;
-        srv.findMatchingRequirements = (avail: any[], payload: any) => {
+        const matchProbe = (avail: any[], payload: any) => {
           const m = origMatch(avail, payload);
           if (!m) {
             const auth = payload?.payload?.authorization ?? {};
@@ -630,10 +645,22 @@ async function setupPaymentMiddleware(): Promise<boolean> {
           }
           return m;
         };
-      } else {
+        srv.findMatchingRequirements = matchProbe;
+        // Claim the probe only once the assignment has demonstrably TAKEN, by
+        // reading the property back. `typeof === "function"` proves the seam
+        // EXISTS, not that it is WRITABLE, and the two failure modes differ: a
+        // read-only property throws under "use strict" (which tsc emits today
+        // under `strict: true`) but would silently no-op without it. Setting the
+        // flag before the assignment caught neither; setting it after catches
+        // only the throw. Reading it back catches both, so the flag can never
+        // assert a probe that is not installed — the fail-open it exists to close.
+        matchProbeInstalled = srv.findMatchingRequirements === matchProbe;
+      }
+      if (!matchProbeInstalled) {
         console.warn(
           "[x402-verify] probe NOT installed: x402ResourceServer.findMatchingRequirements is " +
-            "missing — payment matching is UNAFFECTED, but NO-MATCH rejections are silent again.",
+            "missing or not writable — payment matching is UNAFFECTED, but NO-MATCH " +
+            "rejections are silent again (core's own echo is no longer suppressed).",
         );
       }
 
@@ -1321,27 +1348,87 @@ function safeUpstreamDetail(rawBody: string): string {
 }
 
 /**
- * Log a paid proxy's CONNECTION failure. Closes the coverage gap the monitor
- * documents: a non-ok upstream RESPONSE is logged ("upstream non-ok <status>"),
- * but a pure connection failure — ECONNREFUSED, ETIMEDOUT, ENOTFOUND, an abort
- * — hit each handler's catch and logged NOTHING, so "unit up, TCP refuses" was
- * invisible in the journal and to any sensor reading it. That is the likeliest
- * next silent outage now that the GET feeds are single-sourced on their live
- * companions.
+ * Error classes that mean the upstream was genuinely NOT REACHABLE — a DNS, TCP
+ * or deadline failure at the transport layer. Node surfaces connection faults as
+ * TypeError("fetch failed") carrying the real code on `.cause` (a POSIX code, or
+ * one of undici's own UND_ERR_* for its timeouts); an abort or a request
+ * deadline arrives as a DOMException named AbortError/TimeoutError.
  *
- * Marker is deliberately distinct from "upstream non-ok" and grep-stable, so a
- * sensor can count the two classes separately.
- *
- * Logs the feed id and the ERROR CLASS only — never a body, URL, header, or key.
- * `fetch()` reports connection faults as TypeError("fetch failed") with the real
- * code on `.cause`, so the cause chain is read first; the message itself is NOT
- * logged because it can carry the upstream host/port (the R4 leak class this
- * file already guards on the response path).
+ * This list is the definition of the "upstream unreachable" marker, so a code
+ * NOT on it is counted as a proxy error instead — see logProxyFailure.
  */
-function logUpstreamUnreachable(feed: string, err: unknown): void {
+const UNREACHABLE_CLASSES = new Set([
+  // POSIX socket / DNS
+  "ECONNREFUSED", "ECONNRESET", "ECONNABORTED", "ETIMEDOUT", "ENOTFOUND",
+  "EAI_AGAIN", "EHOSTUNREACH", "EHOSTDOWN", "ENETUNREACH", "ENETDOWN",
+  "EADDRNOTAVAIL", "EPIPE", "EPROTO",
+  // undici
+  "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET", "UND_ERR_ABORTED",
+  // abort / deadline (DOMException .name — see upstreamErrorClass on why the
+  // numeric .code must not be read here)
+  "AbortError", "TimeoutError",
+]);
+// Deliberately NOT listed: TLS/certificate failures (CERT_HAS_EXPIRED,
+// ERR_TLS_CERT_ALTNAME_INVALID, UNABLE_TO_VERIFY_LEAF_SIGNATURE, and the rest of
+// OpenSSL's set). They are a trust/config fault with different remediation than
+// "the host is down", and a partial list would split identical incidents across
+// both markers — a complete rule over a narrow set beats a partial rule over a
+// wide one. They land under "proxy error", which is logged, not silent.
+
+/**
+ * The error CLASS for a proxy failure: a transport code when there is one, else
+ * the error name, else "unknown".
+ *
+ * A code counts only when it is a STRING. DOMException carries a legacy NUMERIC
+ * `.code` (AbortError = 20, TimeoutError = 23), so reading `.code` unguarded
+ * logs `class=20` for an aborted request — a bare number no sensor can match and
+ * no reader can interpret, and it never reaches the `.name` that holds the real
+ * class. Skipping non-strings lets those fall through to `.name`.
+ *
+ * Verified against Node 20.20.2 (2026-07-31): a refused connection puts
+ * code="ECONNREFUSED" on `.cause` of TypeError("fetch failed"), DNS failure puts
+ * "ENOTFOUND" there, and abort/timeout arrive as a bare DOMException with only
+ * the numeric code and the name.
+ */
+function upstreamErrorClass(err: unknown): string {
   const e = err as { code?: unknown; name?: unknown; cause?: { code?: unknown; name?: unknown } };
-  const cls = e?.cause?.code ?? e?.code ?? e?.cause?.name ?? e?.name ?? "unknown";
-  console.error(`[x402-gateway] upstream unreachable: feed=${feed} class=${String(cls)}`);
+  const str = (v: unknown): string | undefined => (typeof v === "string" && v !== "" ? v : undefined);
+  return str(e?.cause?.code) ?? str(e?.code) ?? str(e?.cause?.name) ?? str(e?.name) ?? "unknown";
+}
+
+/**
+ * Log a paid proxy's catch-block failure under one of TWO markers. Closes the
+ * coverage gap the monitor documents: a non-ok upstream RESPONSE is logged
+ * ("upstream non-ok <status>"), but everything reaching a handler's catch logged
+ * NOTHING, so "unit up, TCP refuses" was invisible in the journal and to any
+ * sensor reading it — the likeliest next silent outage now that the GET feeds are
+ * single-sourced on their live companions.
+ *
+ * The two markers are grep-stable, mutually exclusive, and deliberately distinct
+ * from "upstream non-ok", so a sensor counts three failure classes separately:
+ *
+ *   upstream unreachable: feed=<id> class=<code>   transport-level, UNREACHABLE_CLASSES
+ *   proxy error:          feed=<id> class=<code>   everything else in the catch
+ *
+ * The split exists because a catch here is wider than the fetch: it also takes a
+ * fail-closed staleness/validation rejection from fetchFeedPayload, a
+ * discovery-api non-ok (both plain Error, class=Error), and any bug in this
+ * file. Counting those as "unreachable" would make a reachability sensor fire on
+ * events where the upstream answered perfectly well — a sensor that cries wolf
+ * gets muted, so it must count reachability and nothing else. Neither marker is
+ * silent: an unclassified failure is still one line, just in the other bucket.
+ *
+ * Logs the feed id and the ERROR CLASS only (see upstreamErrorClass) — never a
+ * body, URL, header, or key. The message itself is NOT logged, on either marker,
+ * because it can carry the upstream host/port (the R4 leak class this file
+ * already guards on the response path — fetchFeedPayload's throw messages
+ * interpolate the publisher and the upstream URL).
+ */
+function logProxyFailure(feed: string, err: unknown): void {
+  const cls = upstreamErrorClass(err);
+  const marker = UNREACHABLE_CLASSES.has(cls) ? "upstream unreachable" : "proxy error";
+  console.error(`[x402-gateway] ${marker}: feed=${feed} class=${cls}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1430,7 +1517,7 @@ app.post("/feeds/address-reputation", async (req, res) => {
       res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
-    logUpstreamUnreachable("address-reputation", err);
+    logProxyFailure("address-reputation", err);
     res.status(502).json({ error: "address-reputation proxy failed", detail: "upstream unavailable" });
   }
 });
@@ -1461,7 +1548,7 @@ app.post("/feeds/merchant-screen", async (req, res) => {
       res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
-    logUpstreamUnreachable("merchant-screen", err);
+    logProxyFailure("merchant-screen", err);
     res.status(502).json({ error: "merchant-screen proxy failed", detail: "upstream unavailable" });
   }
 });
@@ -1494,7 +1581,7 @@ app.post("/feeds/pkg-verdict", async (req, res) => {
       res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
-    logUpstreamUnreachable("pkg-verdict", err);
+    logProxyFailure("pkg-verdict", err);
     res.status(502).json({ error: "pkg-verdict proxy failed", detail: "upstream unavailable" });
   }
 });
@@ -1525,7 +1612,7 @@ app.post("/feeds/sanctions-screen", async (req, res) => {
       res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
-    logUpstreamUnreachable("sanctions-screen", err);
+    logProxyFailure("sanctions-screen", err);
     res.status(502).json({ error: "sanctions-screen proxy failed", detail: "upstream unavailable" });
   }
 });
@@ -1560,7 +1647,7 @@ app.post("/feeds/reasoning-verdict", async (req, res) => {
       res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
-    logUpstreamUnreachable("reasoning-verdict", err);
+    logProxyFailure("reasoning-verdict", err);
     res.status(502).json({ error: "reasoning-verdict proxy failed", detail: "upstream unavailable" });
   }
 });
@@ -1595,7 +1682,7 @@ app.post("/feeds/runtime-eol", async (req, res) => {
       res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
-    logUpstreamUnreachable("runtime-eol", err);
+    logProxyFailure("runtime-eol", err);
     res.status(502).json({ error: "runtime-eol gate proxy failed", detail: "upstream unavailable" });
   }
 });
@@ -1630,7 +1717,7 @@ app.post("/feeds/threat-intel", async (req, res) => {
       res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
-    logUpstreamUnreachable("threat-intel", err);
+    logProxyFailure("threat-intel", err);
     res.status(502).json({ error: "threat-intel gate proxy failed", detail: "upstream unavailable" });
   }
 });
@@ -1711,7 +1798,7 @@ app.post("/feeds/positioning-snapshot", async (req, res) => {
       res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
     }
   } catch (err: any) {
-    logUpstreamUnreachable("positioning-snapshot", err);
+    logProxyFailure("positioning-snapshot", err);
     res.status(502).json({ error: "positioning-snapshot proxy failed", detail: "upstream unavailable" });
   }
 });
@@ -1763,7 +1850,7 @@ for (const feed of feedRegistry) {
         await sendAttested(res, payload);
       }
     } catch (err: any) {
-      logUpstreamUnreachable(slug, err);
+      logProxyFailure(slug, err);
       res.status(502).json({ error: `Failed to fetch ${slug}`, detail: "upstream unavailable" });
     }
   });
