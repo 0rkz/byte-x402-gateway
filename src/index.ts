@@ -621,40 +621,58 @@ async function setupPaymentMiddleware(): Promise<boolean> {
     // Forensics never takes the revenue path down: if the seam moves we log
     // that the probe was lost and leave payment handling untouched.
     //
-    // KNOWN GAP (2026-07-31, unfixed — deliberately out of scope of the cleanup
-    // that added the read-back below): the guard covers a seam that is MISSING,
-    // not one that is present-but-not-writable. Against a read-only property the
-    // ASSIGNMENT throws under "use strict", which lands in the outer catch and
-    // fails every paid route closed (503) on a diagnostic wrapper — exactly what
-    // the paragraph above says must never happen. Closing it means wrapping each
-    // probe install in its own try/catch; that changes revenue-path behaviour, so
-    // it is a separate, reviewed change rather than a nit.
+    // GAP CLOSED (2026-08-01, board #8 — founder-gated, because it changes
+    // revenue-path error handling): the `typeof` guards below prove each seam
+    // EXISTS; they cannot prove it is WRITABLE. Against a read-only property the
+    // ASSIGNMENT ITSELF throws under "use strict" (tsc emits it under `strict:
+    // true`), and before this change that throw fell through to the outer catch
+    // and failed EVERY paid route closed (503) on the strength of a purely
+    // diagnostic wrapper — precisely what the paragraph above says must never
+    // happen. Each probe now installs inside its OWN try/catch and degrades to a
+    // warn, so a seam that moves or hardens costs forensics and nothing else.
+    //
+    // Deliberately NOT one try/catch around both: a throw while installing the
+    // first would skip the second, turning one lost probe into two lost probes.
+    // The catches swallow by design — that is the whole point — and each is
+    // paired with the pre-existing "probe NOT installed" line so a degraded
+    // build still says so out loud rather than going quiet.
     {
       const srv = server as any;
 
-      if (typeof srv.findMatchingRequirements === "function") {
-        const origMatch = srv.findMatchingRequirements.bind(server);
-        const matchProbe = (avail: any[], payload: any) => {
-          const m = origMatch(avail, payload);
-          if (!m) {
-            const auth = payload?.payload?.authorization ?? {};
-            console.warn(
-              `[x402-verify] NO-MATCH payer=${auth.from ?? "?"} sent={scheme:${payload?.scheme},network:${payload?.network},v:${payload?.x402Version}} ` +
-                `available=${JSON.stringify((avail ?? []).map((a: any) => ({ scheme: a?.scheme, network: a?.network, amount: a?.amount, asset: a?.asset, payTo: a?.payTo })))}`,
-            );
-          }
-          return m;
-        };
-        srv.findMatchingRequirements = matchProbe;
-        // Claim the probe only once the assignment has demonstrably TAKEN, by
-        // reading the property back. `typeof === "function"` proves the seam
-        // EXISTS, not that it is WRITABLE, and the two failure modes differ: a
-        // read-only property throws under "use strict" (which tsc emits today
-        // under `strict: true`) but would silently no-op without it. Setting the
-        // flag before the assignment caught neither; setting it after catches
-        // only the throw. Reading it back catches both, so the flag can never
-        // assert a probe that is not installed — the fail-open it exists to close.
-        matchProbeInstalled = srv.findMatchingRequirements === matchProbe;
+      try {
+        if (typeof srv.findMatchingRequirements === "function") {
+          const origMatch = srv.findMatchingRequirements.bind(server);
+          const matchProbe = (avail: any[], payload: any) => {
+            const m = origMatch(avail, payload);
+            if (!m) {
+              const auth = payload?.payload?.authorization ?? {};
+              console.warn(
+                `[x402-verify] NO-MATCH payer=${auth.from ?? "?"} sent={scheme:${payload?.scheme},network:${payload?.network},v:${payload?.x402Version}} ` +
+                  `available=${JSON.stringify((avail ?? []).map((a: any) => ({ scheme: a?.scheme, network: a?.network, amount: a?.amount, asset: a?.asset, payTo: a?.payTo })))}`,
+              );
+            }
+            return m;
+          };
+          srv.findMatchingRequirements = matchProbe;
+          // Claim the probe only once the assignment has demonstrably TAKEN, by
+          // reading the property back. `typeof === "function"` proves the seam
+          // EXISTS, not that it is WRITABLE, and the two failure modes differ: a
+          // read-only property throws under "use strict" (which tsc emits today
+          // under `strict: true`) but would silently no-op without it. Setting the
+          // flag before the assignment caught neither; setting it after catches
+          // only the throw. Reading it back catches both, so the flag can never
+          // assert a probe that is not installed — the fail-open it exists to close.
+          matchProbeInstalled = srv.findMatchingRequirements === matchProbe;
+        }
+      } catch (e) {
+        // Class only, never the message: an assignment TypeError can quote the
+        // property and surrounding source, and this file's logging discipline is
+        // class-only everywhere (see upstreamErrorClass).
+        matchProbeInstalled = false;
+        console.warn(
+          `[x402-verify] match probe install FAILED: class=${upstreamErrorClass(e)} — ` +
+            "payment matching is UNAFFECTED (core's own method is left in place).",
+        );
       }
       if (!matchProbeInstalled) {
         console.warn(
@@ -664,28 +682,46 @@ async function setupPaymentMiddleware(): Promise<boolean> {
         );
       }
 
-      if (typeof srv.verifyPayment === "function") {
-        const origVerify = srv.verifyPayment.bind(server);
-        srv.verifyPayment = async (payload: any, req: any, ext?: unknown, ctx?: any) => {
-          const r = await origVerify(payload, req, ext, ctx);
-          if (!r || r.isValid === false) {
-            const auth = payload?.payload?.authorization ?? {};
-            // Stamp the reason before the challenge is written, so the outbound
-            // sniffer can tell core's echo of THIS line from a new finding.
-            markHotLogged(ctx, r?.invalidReason);
-            console.warn(
-              `[x402-verify] REJECTED route=${ctx?.request?.path ?? "?"} reason=${JSON.stringify(r?.invalidReason ?? null)} ` +
-                `message=${JSON.stringify(r?.invalidMessage ?? null)} payer=${r?.payer ?? auth.from ?? "?"} ` +
-                `matched={scheme:${req?.scheme},network:${req?.network},amount:${req?.amount},asset:${req?.asset},payTo:${req?.payTo}} ` +
-                `sent={to:${auth.to ?? "?"},value:${auth.value ?? "?"},validBefore:${auth.validBefore ?? "?"}}`,
-            );
-          }
-          return r;
-        };
-      } else {
+      // Read back like the match probe, and for the same reason. Previously this
+      // side only had an `else` on the `typeof` check, so a present-but-unwritable
+      // verifyPayment reported nothing at all: the else never ran, and under a
+      // non-strict build the assignment would no-op silently. Verify has no
+      // static-suppression flag to corrupt, so the cost there is a silent probe
+      // rather than a fail-open — still the failure this block exists to prevent.
+      let verifyProbeInstalled = false;
+      try {
+        if (typeof srv.verifyPayment === "function") {
+          const origVerify = srv.verifyPayment.bind(server);
+          const verifyProbe = async (payload: any, req: any, ext?: unknown, ctx?: any) => {
+            const r = await origVerify(payload, req, ext, ctx);
+            if (!r || r.isValid === false) {
+              const auth = payload?.payload?.authorization ?? {};
+              // Stamp the reason before the challenge is written, so the outbound
+              // sniffer can tell core's echo of THIS line from a new finding.
+              markHotLogged(ctx, r?.invalidReason);
+              console.warn(
+                `[x402-verify] REJECTED route=${ctx?.request?.path ?? "?"} reason=${JSON.stringify(r?.invalidReason ?? null)} ` +
+                  `message=${JSON.stringify(r?.invalidMessage ?? null)} payer=${r?.payer ?? auth.from ?? "?"} ` +
+                  `matched={scheme:${req?.scheme},network:${req?.network},amount:${req?.amount},asset:${req?.asset},payTo:${req?.payTo}} ` +
+                  `sent={to:${auth.to ?? "?"},value:${auth.value ?? "?"},validBefore:${auth.validBefore ?? "?"}}`,
+              );
+            }
+            return r;
+          };
+          srv.verifyPayment = verifyProbe;
+          verifyProbeInstalled = srv.verifyPayment === verifyProbe;
+        }
+      } catch (e) {
+        verifyProbeInstalled = false;
         console.warn(
-          "[x402-verify] probe NOT installed: x402ResourceServer.verifyPayment is missing — " +
-            "verification is UNAFFECTED, but verify rejections are silent again.",
+          `[x402-verify] verify probe install FAILED: class=${upstreamErrorClass(e)} — ` +
+            "verification is UNAFFECTED (core's own method is left in place).",
+        );
+      }
+      if (!verifyProbeInstalled) {
+        console.warn(
+          "[x402-verify] probe NOT installed: x402ResourceServer.verifyPayment is missing or " +
+            "not writable — verification is UNAFFECTED, but verify rejections are silent again.",
         );
       }
     }
