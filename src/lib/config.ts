@@ -477,8 +477,25 @@ export const feedRegistry: FeedMetadata[] = [
   // pre-restart ordering (unit must show healthz ok:true BEFORE the gateway
   // is restarted onto this registry entry, else every /query is a signed-
   // refusal 503 by design — the service's own fail-closed contract).
+  // TRUST-BOUNDARY sentence added 2026-08-01 (hardening plan §2.1). The payTo
+  // composition gap is real: the verdict cryptographically commits to the payTo
+  // (it is inside the keccak'd canonical bytes as answer.query.address), but
+  // NOTHING ties that string to the address that actually receives settlement —
+  // the caller supplies whatever address it wants screened and then settles
+  // against whatever the merchant's own 402 says. The only cross-check
+  // (payto_match) is against the merchant's /.well-known/x402 manifest at screen
+  // time, is advisory, and costs zero score when it comes back None. Until ms-v2
+  // closes that, it is DISCLOSED here. The casing caveat is load-bearing, not
+  // pedantry: merchant-screen/resolvers.py normalize_address() lowercases the
+  // address while real 402 challenges carry EIP-55 checksummed payTo, so the
+  // naive `verdict.query.address === challenge.payTo` check a careful integrator
+  // would write fails SILENTLY. Scope stays authenticity/provenance, never
+  // correctness. NOTE: this one field fans out to /feeds, /openapi.json,
+  // agent.json, .well-known and the GET payment-challenge description — edit it
+  // here only. The POST 402 challenge uses the separate, founder-approved
+  // PAYMENT_CHALLENGE_DESCRIPTION["merchant-screen"] in index.ts (not touched).
   customPricedFeed("merchant-screen", "Merchant Screen Oracle",
-    "Pre-settlement merchant screen: signed ALLOW/WARN/BLOCK on a (domain, payTo, observed price) BEFORE an agent settles an x402 payment. ms-v1 ruleset over first-party signals measured at query time — RDAP domain age, live TLS handshake (cert age, issuer, SAN match), off-domain redirect probe, brand-similarity distance vs a committed known-brand corpus, and the merchant's own advertised x402 manifest price. Method disclosed per field; unmeasurable signals report unverified and only lower confidence. The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting. Every query is logged and retained: the domain, the payTo address and price you supplied, the verdict, and a summary of the signals behind it. Producing a verdict requires live outbound requests against the screened domain itself — the merchant may observe this traffic; screening is not covert.",
+    "Pre-settlement merchant screen: signed ALLOW/WARN/BLOCK on a (domain, payTo, observed price) BEFORE an agent settles an x402 payment. ms-v1 ruleset over first-party signals measured at query time — RDAP domain age, live TLS handshake (cert age, issuer, SAN match), off-domain redirect probe, brand-similarity distance vs a committed known-brand corpus, and the merchant's own advertised x402 manifest price. Method disclosed per field; unmeasurable signals report unverified and only lower confidence. The verdict carries an embedded EIP-712 PayloadAttestation — recompute keccak256(answer) and recover the signer before acting. Trust boundary: the payTo and price are values you assert, not values we observe on your payment — the verdict is a point-in-time snapshot of the exact tuple you supplied, and it neither sees nor constrains the address you ultimately settle to. Before releasing funds compare answer.query against the 402 challenge you are about to pay (answer.query.address is lowercased — compare case-insensitively). The receipt proves provenance and integrity, not correctness. Every query is logged and retained: the domain, the payTo address and price you supplied, the verdict, and a summary of the signals behind it. Producing a verdict requires live outbound requests against the screened domain itself — the merchant may observe this traffic; screening is not covert.",
     "on-demand", 3200, "commerce", "100000"),
   // token-safety delisted 2026-06-12 — NOT in this registry (so it has no payment
   // gate). Its route in index.ts is a 410-Gone stub (fails closed, serves no data)

@@ -1009,7 +1009,14 @@ const syncOracleResponseSchema = {
     broadcast: broadcastDisabledSchema,
     note: {
       type: "string",
-      description: "Present ONLY when the answer is returned unsigned (no publisher key configured) — the `attestation` is then absent and the gateway X-BYTE-Attestation header is the only receipt.",
+      // Corrected 2026-08-01 (hardening plan §0.2). The old text — "Present ONLY
+      // when the answer is returned unsigned (no publisher key configured)" —
+      // documented a fail-OPEN behavior most oracles behind this schema no
+      // longer have: address-reputation, pkg-verdict and sanctions-screen now
+      // refuse with 503 rather than serve an unsigned answer, so they never emit
+      // it. positioning-snapshot still can. Worded so it stays true either way,
+      // and so `note` is never read as the signal for "is this signed?".
+      description: "Optional diagnostic string — NOT part of the signed bytes, and NOT emitted by every feed. Oracles that fail closed on an unusable publisher key refuse with 503 instead of returning an unsigned answer, so they never set it; where it does appear the `attestation` is absent and the gateway X-BYTE-Attestation response header is the only receipt. Decide whether an answer is signed by checking for `attestation` — never infer it from the absence of `note`.",
     },
   },
   required: ["answer"],
@@ -1069,20 +1076,30 @@ const reasoningVerdictResponseSchema = {
 /** Wrap a typed `answer` schema in the standard synchronous oracle envelope
  *  { answer, attestation?, broadcast, note? }. `embeddedAttestation:false` for a
  *  feed that carries no in-body receipt (usc-statute — its provenance receipt is
- *  the gateway X-BYTE-Attestation response header). */
+ *  the gateway X-BYTE-Attestation response header). `note:false` for a feed that
+ *  FAILS CLOSED on a missing publisher key (503) and therefore never returns an
+ *  unsigned-answer note on a paid 200 — merchant-screen. The default note text
+ *  below stays as-is BECAUSE it is still accurate for the feeds that use it:
+ *  runtime-eol (data-feeds/runtime-eol/gate.py) and threat-intel
+ *  (data-feeds/threat-intel/gate.py) both still set
+ *  `note: "no publisher key configured — answer returned UNSIGNED"`. Verified
+ *  against the live services 2026-08-01 (hardening plan §0.2) — do not "correct"
+ *  it without re-reading them. */
 function syncResponseWith(
   answerSchema: object,
-  opts: { embeddedAttestation?: boolean; noteDesc?: string } = {},
+  opts: { embeddedAttestation?: boolean; noteDesc?: string; note?: boolean } = {},
 ) {
   const properties: Record<string, unknown> = { answer: answerSchema };
   if (opts.embeddedAttestation !== false) properties.attestation = payloadAttestationSchema;
   properties.broadcast = broadcastDisabledSchema;
-  properties.note = {
-    type: "string",
-    description:
-      opts.noteDesc ??
-      "Present ONLY when the answer is returned unsigned (no publisher key configured) — the gateway X-BYTE-Attestation header is then the only receipt.",
-  };
+  if (opts.note !== false) {
+    properties.note = {
+      type: "string",
+      description:
+        opts.noteDesc ??
+        "Present ONLY when the answer is returned unsigned (no publisher key configured) — the gateway X-BYTE-Attestation header is then the only receipt.",
+    };
+  }
   return { type: "object", properties, required: ["answer"] };
 }
 
@@ -1249,7 +1266,14 @@ const merchantScreenAnswerSchema = {
 const runtimeEolResponseSchema = syncResponseWith(runtimeEolAnswerSchema);
 const threatIntelResponseSchema = syncResponseWith(threatIntelAnswerSchema);
 const evidencePackResponseSchema = syncResponseWith(evidencePackAnswerSchema);
-const merchantScreenResponseSchema = syncResponseWith(merchantScreenAnswerSchema);
+// merchant-screen has NO unsigned-answer variant: when signing is requested and
+// the publisher key is unusable it refuses the query with 503 rather than return
+// a 200 carrying an unsigned verdict plus a soft note
+// (data-feeds/merchant-screen/server.py — the fail-closed check at the top of
+// /query). Its paid 200 body is {answer, broadcast, attestation?} and never
+// carries a top-level `note`, so documenting one here promised a response shape
+// the service cannot produce (hardening plan §0.2). Verified 2026-08-01.
+const merchantScreenResponseSchema = syncResponseWith(merchantScreenAnswerSchema, { note: false });
 const uscStatuteResponseSchema = syncResponseWith(uscStatuteAnswerSchema, {
   embeddedAttestation: false,
   noteDesc:

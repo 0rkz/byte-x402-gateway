@@ -1340,10 +1340,26 @@ app.get("/favicon.ico", (_req, res) => {
   });
 });
 
-/** Health check for load balancers and monitoring. */
+/**
+ * Health check for load balancers and monitoring.
+ *
+ * `signing_ok` mirrors merchant-screen's /healthz signing gate. Since the
+ * 2026-08-01 no-key hardening (lib/attestation.ts §1.4) an unset
+ * GATEWAY_ATTESTATION_KEY makes every PAID route refuse with 503 rather than
+ * serve an unattested 200 — so a missing key is a full paid-surface outage, and
+ * a health endpoint that always answered a hardcoded "ok" would hide it until a
+ * buyer hit it. Reported here so monitoring sees it first.
+ *
+ * The HTTP status stays 200 in both states ON PURPOSE: this endpoint also fronts
+ * the FREE discovery surfaces (/feeds, /openapi.json, agent.json, .well-known),
+ * which keep working when signing is down, and a non-200 would have a load
+ * balancer pull those out of rotation as well. Read the body, not just the code.
+ */
 app.get("/health", (_req, res) => {
+  const signingOk = attestationEnabled();
   res.json({
-    status: "ok",
+    status: signingOk ? "ok" : "degraded",
+    signing_ok: signingOk,
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
   });
@@ -1467,6 +1483,44 @@ function logProxyFailure(feed: string, err: unknown): void {
   console.error(`[x402-gateway] ${marker}: feed=${feed} class=${cls}`);
 }
 
+/**
+ * Deadline on every upstream oracle proxy fetch below (hardening plan §1.3).
+ *
+ * Node's fetch applies NO response deadline of its own, so before this an
+ * upstream that accepted the TCP connection and then never answered held the
+ * paying agent's request open indefinitely (and pinned a gateway socket). A
+ * hung oracle is the worst shape for an agent: it cannot distinguish "slow" from
+ * "never", so it stalls or retries — re-signing a fresh payment authorization
+ * each loop.
+ *
+ * FAILS CLOSED, never a degraded 200. AbortSignal.timeout aborts the fetch with
+ * a DOMException named "TimeoutError", which lands in each handler's catch:
+ * logProxyFailure records it under `upstream unreachable` (TimeoutError is in
+ * UNREACHABLE_CLASSES) and the handler answers 502. A >=400 makes the x402
+ * middleware skip settlement, so a caller is never charged for a request that
+ * timed out.
+ *
+ * 15s is the house AbortSignal.timeout pattern (mcp-server/src/tools/fact.ts
+ * uses 5_000 against the local indexer) widened for these oracles: their slow
+ * leg is live third-party network probing at query time — RDAP lookup + TLS
+ * handshake + redirect probe for merchant-screen, registry/OSV calls for
+ * pkg-verdict, local GPU inference for reasoning-verdict — not an index read.
+ */
+const UPSTREAM_FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * Buyer-facing `detail` for a proxy catch: name a deadline as a deadline.
+ * "upstream unavailable" is honest but tells an agent nothing about whether to
+ * retry; a timeout is a distinct, actionable condition. Every other failure
+ * class keeps the existing opaque string (R4 leak-class defense — never echo an
+ * upstream host, port, or error text to the buyer).
+ */
+function proxyFailureDetail(err: unknown): string {
+  return upstreamErrorClass(err) === "TimeoutError"
+    ? `upstream did not respond within ${UPSTREAM_FETCH_TIMEOUT_MS / 1000}s`
+    : "upstream unavailable";
+}
+
 // ---------------------------------------------------------------------------
 // Paid Endpoints
 // ---------------------------------------------------------------------------
@@ -1541,6 +1595,9 @@ app.post("/feeds/address-reputation", async (req, res) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      // Bounded — a hung upstream must not hang the paying agent. Aborting
+      // throws into the catch below (502, settlement cancelled): FAIL CLOSED.
+      signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
     });
     const text = await upstream.text();
     if (upstream.ok) {
@@ -1554,7 +1611,7 @@ app.post("/feeds/address-reputation", async (req, res) => {
     }
   } catch (err: any) {
     logProxyFailure("address-reputation", err);
-    res.status(502).json({ error: "address-reputation proxy failed", detail: "upstream unavailable" });
+    res.status(502).json({ error: "address-reputation proxy failed", detail: proxyFailureDetail(err) });
   }
 });
 
@@ -1572,6 +1629,9 @@ app.post("/feeds/merchant-screen", async (req, res) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      // Bounded — a hung upstream must not hang the paying agent. Aborting
+      // throws into the catch below (502, settlement cancelled): FAIL CLOSED.
+      signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
     });
     const text = await upstream.text();
     if (upstream.ok) {
@@ -1585,7 +1645,7 @@ app.post("/feeds/merchant-screen", async (req, res) => {
     }
   } catch (err: any) {
     logProxyFailure("merchant-screen", err);
-    res.status(502).json({ error: "merchant-screen proxy failed", detail: "upstream unavailable" });
+    res.status(502).json({ error: "merchant-screen proxy failed", detail: proxyFailureDetail(err) });
   }
 });
 
@@ -1605,6 +1665,9 @@ app.post("/feeds/pkg-verdict", async (req, res) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      // Bounded — a hung upstream must not hang the paying agent. Aborting
+      // throws into the catch below (502, settlement cancelled): FAIL CLOSED.
+      signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
     });
     const text = await upstream.text();
     if (upstream.ok) {
@@ -1618,7 +1681,7 @@ app.post("/feeds/pkg-verdict", async (req, res) => {
     }
   } catch (err: any) {
     logProxyFailure("pkg-verdict", err);
-    res.status(502).json({ error: "pkg-verdict proxy failed", detail: "upstream unavailable" });
+    res.status(502).json({ error: "pkg-verdict proxy failed", detail: proxyFailureDetail(err) });
   }
 });
 
@@ -1636,6 +1699,9 @@ app.post("/feeds/sanctions-screen", async (req, res) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      // Bounded — a hung upstream must not hang the paying agent. Aborting
+      // throws into the catch below (502, settlement cancelled): FAIL CLOSED.
+      signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
     });
     const text = await upstream.text();
     if (upstream.ok) {
@@ -1649,7 +1715,7 @@ app.post("/feeds/sanctions-screen", async (req, res) => {
     }
   } catch (err: any) {
     logProxyFailure("sanctions-screen", err);
-    res.status(502).json({ error: "sanctions-screen proxy failed", detail: "upstream unavailable" });
+    res.status(502).json({ error: "sanctions-screen proxy failed", detail: proxyFailureDetail(err) });
   }
 });
 
@@ -1671,6 +1737,9 @@ app.post("/feeds/reasoning-verdict", async (req, res) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      // Bounded — a hung upstream must not hang the paying agent. Aborting
+      // throws into the catch below (502, settlement cancelled): FAIL CLOSED.
+      signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
     });
     const text = await upstream.text();
     if (upstream.ok) {
@@ -1684,7 +1753,7 @@ app.post("/feeds/reasoning-verdict", async (req, res) => {
     }
   } catch (err: any) {
     logProxyFailure("reasoning-verdict", err);
-    res.status(502).json({ error: "reasoning-verdict proxy failed", detail: "upstream unavailable" });
+    res.status(502).json({ error: "reasoning-verdict proxy failed", detail: proxyFailureDetail(err) });
   }
 });
 
@@ -1706,6 +1775,9 @@ app.post("/feeds/runtime-eol", async (req, res) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      // Bounded — a hung upstream must not hang the paying agent. Aborting
+      // throws into the catch below (502, settlement cancelled): FAIL CLOSED.
+      signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
     });
     const text = await upstream.text();
     if (upstream.ok) {
@@ -1719,7 +1791,7 @@ app.post("/feeds/runtime-eol", async (req, res) => {
     }
   } catch (err: any) {
     logProxyFailure("runtime-eol", err);
-    res.status(502).json({ error: "runtime-eol gate proxy failed", detail: "upstream unavailable" });
+    res.status(502).json({ error: "runtime-eol gate proxy failed", detail: proxyFailureDetail(err) });
   }
 });
 
@@ -1741,6 +1813,9 @@ app.post("/feeds/threat-intel", async (req, res) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      // Bounded — a hung upstream must not hang the paying agent. Aborting
+      // throws into the catch below (502, settlement cancelled): FAIL CLOSED.
+      signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
     });
     const text = await upstream.text();
     if (upstream.ok) {
@@ -1754,7 +1829,7 @@ app.post("/feeds/threat-intel", async (req, res) => {
     }
   } catch (err: any) {
     logProxyFailure("threat-intel", err);
-    res.status(502).json({ error: "threat-intel gate proxy failed", detail: "upstream unavailable" });
+    res.status(502).json({ error: "threat-intel gate proxy failed", detail: proxyFailureDetail(err) });
   }
 });
 
@@ -1822,6 +1897,9 @@ app.post("/feeds/positioning-snapshot", async (req, res) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      // Bounded — a hung upstream must not hang the paying agent. Aborting
+      // throws into the catch below (502, settlement cancelled): FAIL CLOSED.
+      signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
     });
     const text = await upstream.text();
     if (upstream.ok) {
@@ -1835,7 +1913,7 @@ app.post("/feeds/positioning-snapshot", async (req, res) => {
     }
   } catch (err: any) {
     logProxyFailure("positioning-snapshot", err);
-    res.status(502).json({ error: "positioning-snapshot proxy failed", detail: "upstream unavailable" });
+    res.status(502).json({ error: "positioning-snapshot proxy failed", detail: proxyFailureDetail(err) });
   }
 });
 

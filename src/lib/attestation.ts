@@ -13,8 +13,26 @@
  * PayloadAttestation domain + struct VERBATIM (DEPLOY_REVIEW §3): the name is a
  * hard constant and is never renamed; chainId / verifyingContract default to the
  * canonical r2 values and are env-overridable only for a clean Base cutover.
- * If GATEWAY_ATTESTATION_KEY is unset, attestation is disabled and responses are
- * byte-for-byte what they were before — a pure superset.
+ *
+ * NO-KEY POSTURE — FAIL CLOSED (2026-08-01, hardening plan §1.4). If
+ * GATEWAY_ATTESTATION_KEY is unset, sendAttested/sendAttestedRaw REFUSE the
+ * response with 503 instead of serving a paid 200 with no X-BYTE-Attestation
+ * header and no marker. It used to be the opposite ("attestation is disabled and
+ * responses are byte-for-byte what they were before — a pure superset"), which
+ * is a silent degrade: the catalog, agent.json and /openapi.json all promise
+ * that "every data response carries an EIP-712 PayloadAttestation receipt", and
+ * a buyer that verifies before acting cannot distinguish "this deployment has no
+ * key" from "someone stripped the header in transit". Same class as the
+ * merchant-screen fail-closed 503 (data-feeds/merchant-screen/server.py) and
+ * required by CLAUDE.md §3: if it cannot be verified, it does not proceed.
+ *
+ * Scope of the refusal: these two helpers are called ONLY from the paid feed
+ * routes (the POST oracle proxies and the publisher-backed GET loop in
+ * index.ts — grep sendAttested). The free discovery surfaces (/feeds, /health,
+ * /openapi.json, agent.json, .well-known) never call them, so they are
+ * unaffected; attestationReceiptBlock() already omits the receipt block from
+ * those documents when attestation is disabled. A >=400 makes @x402/express
+ * skip settlement, so a refused request is never charged.
  */
 
 import { keccak256, type Hex } from "viem";
@@ -114,8 +132,9 @@ export async function signCanonicalBytes(bodyBytes: Uint8Array): Promise<ByteAtt
 
 /**
  * Serialize `obj` ONCE, hash + sign those exact bytes, and send the SAME bytes —
- * so the buyer's keccak256(responseBody) matches payloadHash. Sets the
- * X-BYTE-Attestation header when attestation is enabled. Drop-in for res.json().
+ * so the buyer's keccak256(responseBody) matches payloadHash. Drop-in for
+ * res.json(). Delegates to sendAttestedRaw, so it inherits the fail-closed
+ * no-key refusal documented at the top of this file.
  */
 export async function sendAttested(res: import("express").Response, obj: unknown): Promise<void> {
   const body = JSON.stringify(obj);
@@ -129,8 +148,28 @@ export async function sendAttested(res: import("express").Response, obj: unknown
  * minified JSON, which may carry >2^53 integers like balance_wei): a
  * parse/re-stringify round-trip could change the bytes and break the inner
  * attestation, so the gateway signs and forwards the upstream bytes verbatim.
+ *
+ * FAILS CLOSED with 503 when no attestation key is configured — see the no-key
+ * posture note at the top of this file. Callers do nothing after awaiting this,
+ * so the refusal is the whole response.
  */
 export async function sendAttestedRaw(res: import("express").Response, body: string): Promise<void> {
+  if (!account) {
+    // One loud line per refusal: this is an operator misconfiguration, and the
+    // 503 is the only symptom a buyer sees. No body/key material is logged.
+    console.error(
+      "[x402-gateway] FAIL CLOSED: GATEWAY_ATTESTATION_KEY is unset — refusing to " +
+        "serve a paid response without its X-BYTE-Attestation receipt",
+    );
+    res.status(503).json({
+      error: "attestation_unavailable",
+      detail:
+        "This gateway has no attestation key configured, so the response cannot carry the " +
+        "X-BYTE-Attestation receipt every paid feed advertises. Refusing to serve it unsigned " +
+        "rather than degrade silently. No payment is settled for a refused request.",
+    });
+    return;
+  }
   const att = await signCanonicalBytes(new TextEncoder().encode(body));
   res.type("application/json");
   if (att) res.setHeader("X-BYTE-Attestation", JSON.stringify(att));
