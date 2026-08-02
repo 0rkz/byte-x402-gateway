@@ -1502,11 +1502,61 @@ function logProxyFailure(feed: string, err: unknown): void {
  *
  * 15s is the house AbortSignal.timeout pattern (mcp-server/src/tools/fact.ts
  * uses 5_000 against the local indexer) widened for these oracles: their slow
- * leg is live third-party network probing at query time — RDAP lookup + TLS
- * handshake + redirect probe for merchant-screen, registry/OSV calls for
- * pkg-verdict, local GPU inference for reasoning-verdict — not an index read.
+ * leg is live third-party network work at query time — local GPU inference for
+ * reasoning-verdict, single upstream fetches for runtime-eol and threat-intel —
+ * not an index read. The slow multi-leg oracles need more (merchant-screen,
+ * address-reputation, pkg-verdict); see SLOW_UPSTREAM_FETCH_TIMEOUT_MS below.
  */
 const UPSTREAM_FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * Wider deadline for the SLOW MULTI-LEG oracles (founder-authorized 2026-08-01:
+ * "raise to 30s for the probing oracles", extended the same day to pkg-verdict).
+ *
+ * NAMED FOR THE PROPERTY IT ACTUALLY SELECTS. This was
+ * named PROBING_UPSTREAM_FETCH_TIMEOUT_MS while it held only the two
+ * subject-probing feeds; pkg-verdict is NOT probing, and filing it under that label would
+ * have made the constant lie about its own membership. The property all three
+ * share is narrower than "makes network calls" (every oracle does) and wider than
+ * "probes the caller's subject": each runs SEVERAL SEQUENTIAL third-party legs
+ * whose per-leg timeout already sums past 15s, so the old bound could abort a
+ * request that was going to succeed.
+ *
+ *   merchant-screen    — SUBJECT-PROBING. gather_signals() runs fetch_domain_age
+ *                        (RDAP), fetch_tls_ext (live TLS handshake against the
+ *                        screened domain), fetch_redirect (live redirect probe) and
+ *                        fetch_price_sanity (the merchant's own x402 manifest) in
+ *                        sequence, each at HTTP_TIMEOUT_S = 10
+ *                        (data-feeds/merchant-screen/resolvers.py). The screened
+ *                        party controls that latency.
+ *   address-reputation — SUBJECT-PROBING. gather_domain_signals() calls the SAME
+ *                        shim (data-feeds/merchant-trust/resolvers.py) for rdap +
+ *                        tls + dns + wayback, then an on-chain RPC leg. Its wayback
+ *                        leg alone is timeout=25 (merchant-trust/resolvers.py:261) —
+ *                        on its own more than the 15s bound it used to get.
+ *   pkg-verdict        — NOT probing: it queries public package registries, not a
+ *                        subject the caller chose, so nobody hostile controls the
+ *                        latency. It is here on the sequential-legs property alone —
+ *                        up to three sequential registry/OSV calls at
+ *                        HTTP_TIMEOUT_S = 20 (data-feeds/pkg-verdict/resolvers.py:74,
+ *                        called at :201, :264, :328), i.e. a worst case of ~60s
+ *                        against a 15s bound. Slow-but-valid registry responses were
+ *                        the realistic abort here, not an adversary.
+ *
+ * At 15s a legitimately slow but perfectly valid query was aborted, converting a
+ * would-have-succeeded PAID call into a lost sale. Money-safe either way (the abort
+ * is a >=400, so settlement is cancelled and nobody is charged), but a lost sale is
+ * still a loss. Deliberately NOT fixed by cutting the Python-side timeouts instead:
+ * for merchant-screen that changes whether a signal reads "measured" vs
+ * "unverified", which changes signed answer content — ms-v1 is frozen, that is
+ * ms-v2 work.
+ *
+ * The other five bounded routes stay at 15s on purpose: sanctions-screen (pinned/
+ * cached list-states), reasoning-verdict (local GPU inference), runtime-eol and
+ * threat-intel (single upstream fetch each), positioning-snapshot (venue legs at
+ * HTTP_TIMEOUT = 10, but they do not stack the way these three do).
+ */
+const SLOW_UPSTREAM_FETCH_TIMEOUT_MS = 30_000;
 
 /**
  * Buyer-facing `detail` for a proxy catch: name a deadline as a deadline.
@@ -1514,10 +1564,13 @@ const UPSTREAM_FETCH_TIMEOUT_MS = 15_000;
  * retry; a timeout is a distinct, actionable condition. Every other failure
  * class keeps the existing opaque string (R4 leak-class defense — never echo an
  * upstream host, port, or error text to the buyer).
+ *
+ * Takes the route's own bound: since the probing routes wait 30s and the rest
+ * wait 15s, a hardcoded number would tell half the callers the wrong deadline.
  */
-function proxyFailureDetail(err: unknown): string {
+function proxyFailureDetail(err: unknown, timeoutMs: number = UPSTREAM_FETCH_TIMEOUT_MS): string {
   return upstreamErrorClass(err) === "TimeoutError"
-    ? `upstream did not respond within ${UPSTREAM_FETCH_TIMEOUT_MS / 1000}s`
+    ? `upstream did not respond within ${timeoutMs / 1000}s`
     : "upstream unavailable";
 }
 
@@ -1597,7 +1650,10 @@ app.post("/feeds/address-reputation", async (req, res) => {
       body: JSON.stringify(body),
       // Bounded — a hung upstream must not hang the paying agent. Aborting
       // throws into the catch below (502, settlement cancelled): FAIL CLOSED.
-      signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
+      // SUBJECT-PROBING route: 30s, not the 15s default — this upstream runs
+      // rdap + tls + dns + wayback + on-chain RPC sequentially against the
+      // caller-named subject. See SLOW_UPSTREAM_FETCH_TIMEOUT_MS.
+      signal: AbortSignal.timeout(SLOW_UPSTREAM_FETCH_TIMEOUT_MS),
     });
     const text = await upstream.text();
     if (upstream.ok) {
@@ -1611,7 +1667,7 @@ app.post("/feeds/address-reputation", async (req, res) => {
     }
   } catch (err: any) {
     logProxyFailure("address-reputation", err);
-    res.status(502).json({ error: "address-reputation proxy failed", detail: proxyFailureDetail(err) });
+    res.status(502).json({ error: "address-reputation proxy failed", detail: proxyFailureDetail(err, SLOW_UPSTREAM_FETCH_TIMEOUT_MS) });
   }
 });
 
@@ -1631,7 +1687,10 @@ app.post("/feeds/merchant-screen", async (req, res) => {
       body: JSON.stringify(body),
       // Bounded — a hung upstream must not hang the paying agent. Aborting
       // throws into the catch below (502, settlement cancelled): FAIL CLOSED.
-      signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
+      // SUBJECT-PROBING route: 30s, not the 15s default — this upstream runs
+      // RDAP + live TLS + redirect + manifest probes sequentially against the
+      // screened merchant. See SLOW_UPSTREAM_FETCH_TIMEOUT_MS.
+      signal: AbortSignal.timeout(SLOW_UPSTREAM_FETCH_TIMEOUT_MS),
     });
     const text = await upstream.text();
     if (upstream.ok) {
@@ -1645,7 +1704,7 @@ app.post("/feeds/merchant-screen", async (req, res) => {
     }
   } catch (err: any) {
     logProxyFailure("merchant-screen", err);
-    res.status(502).json({ error: "merchant-screen proxy failed", detail: proxyFailureDetail(err) });
+    res.status(502).json({ error: "merchant-screen proxy failed", detail: proxyFailureDetail(err, SLOW_UPSTREAM_FETCH_TIMEOUT_MS) });
   }
 });
 
@@ -1667,7 +1726,11 @@ app.post("/feeds/pkg-verdict", async (req, res) => {
       body: JSON.stringify(body),
       // Bounded — a hung upstream must not hang the paying agent. Aborting
       // throws into the catch below (502, settlement cancelled): FAIL CLOSED.
-      signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
+      // SLOW MULTI-LEG route: 30s, not the 15s default. NOT probing — this
+      // upstream queries public package registries, not a caller-named subject
+      // — it qualifies on sequential legs alone (up to 3 registry/OSV calls at
+      // 20s each). See SLOW_UPSTREAM_FETCH_TIMEOUT_MS.
+      signal: AbortSignal.timeout(SLOW_UPSTREAM_FETCH_TIMEOUT_MS),
     });
     const text = await upstream.text();
     if (upstream.ok) {
@@ -1681,7 +1744,7 @@ app.post("/feeds/pkg-verdict", async (req, res) => {
     }
   } catch (err: any) {
     logProxyFailure("pkg-verdict", err);
-    res.status(502).json({ error: "pkg-verdict proxy failed", detail: proxyFailureDetail(err) });
+    res.status(502).json({ error: "pkg-verdict proxy failed", detail: proxyFailureDetail(err, SLOW_UPSTREAM_FETCH_TIMEOUT_MS) });
   }
 });
 

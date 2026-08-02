@@ -20,6 +20,25 @@ interface DeFiFeedPayload {
   data: YieldPool[];
 }
 
+/**
+ * Deadline on the DeFiLlama fetch below (same class c8487be bounded for the POST
+ * oracle proxies). Node's fetch applies NO response deadline of its own, so an
+ * upstream that accepts the connection and then never answers held this call —
+ * and its caller — open indefinitely.
+ *
+ * 15s, matching index.ts's UPSTREAM_FETCH_TIMEOUT_MS for non-probing fetches:
+ * this is one external HTTPS GET against a public third-party API, NOT a
+ * subject-probing oracle running sequential live probes against a caller-named
+ * host, so it deliberately does not get the 30s probing bound.
+ *
+ * An abort REJECTS (DOMException "TimeoutError") rather than returning a non-ok
+ * response, so it takes the same path a refused connection or DNS failure
+ * already takes today — past the `!res.ok` stale-cache fallback below and out to
+ * the caller. That is not a new error contract; it is the existing one, now
+ * reachable in finite time.
+ */
+const FETCH_TIMEOUT_MS = 15_000;
+
 /** In-memory cache to respect upstream rate limits and reduce latency. */
 let cache: { data: DeFiFeedPayload | null; fetchedAt: number } = {
   data: null,
@@ -38,7 +57,9 @@ export async function fetchDefiYields(): Promise<DeFiFeedPayload> {
     return cache.data;
   }
 
-  const res = await fetch("https://yields.llama.fi/pools");
+  const res = await fetch("https://yields.llama.fi/pools", {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   if (!res.ok) {
     if (cache.data) return cache.data;
     throw new Error(`DeFiLlama API error: ${res.status} ${res.statusText}`);

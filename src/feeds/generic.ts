@@ -74,6 +74,27 @@ interface GenericFeedPayload {
   rawDataBytes?: string;
 }
 
+/**
+ * Deadline on the discovery-api fetch below (same class c8487be bounded for the
+ * POST oracle proxies; called out as still-unbounded in the 2026-08-01 handover).
+ * Node's fetch applies NO response deadline of its own, so an upstream that
+ * accepts the connection and then never answers held this call — and the paying
+ * caller behind it — open indefinitely.
+ *
+ * 15s, matching index.ts's UPSTREAM_FETCH_TIMEOUT_MS for non-probing fetches.
+ * DISCOVERY_BASE defaults to https://api.payperbyte.io — first-party but over the
+ * public internet, so the 5s local-indexer figure (mcp-server/src/tools/fact.ts)
+ * is too tight; and this is a single archive read, NOT a subject-probing oracle,
+ * so it deliberately does not get the 30s probing bound.
+ *
+ * An abort REJECTS (DOMException "TimeoutError") rather than returning a non-ok
+ * response, so it takes the same path a refused connection or DNS failure already
+ * takes today — past the `!res.ok` stale-cache fallback below and out to the
+ * caller. That is not a new error contract; it is the existing one, now reachable
+ * in finite time.
+ */
+const FETCH_TIMEOUT_MS = 15_000;
+
 const cache = new Map<string, { payload: GenericFeedPayload; fetchedAt: number }>();
 
 export async function fetchLatestPublisherPayload(opts: {
@@ -87,7 +108,7 @@ export async function fetchLatestPublisherPayload(opts: {
   }
 
   const url = `${DISCOVERY_BASE}/payloads/publisher/${opts.publisher}?limit=1`;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!res.ok) {
     if (cached) return cached.payload;
     throw new Error(

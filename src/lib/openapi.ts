@@ -1009,13 +1009,17 @@ const syncOracleResponseSchema = {
     broadcast: broadcastDisabledSchema,
     note: {
       type: "string",
-      // Corrected 2026-08-01 (hardening plan §0.2). The old text — "Present ONLY
-      // when the answer is returned unsigned (no publisher key configured)" —
-      // documented a fail-OPEN behavior most oracles behind this schema no
-      // longer have: address-reputation, pkg-verdict and sanctions-screen now
-      // refuse with 503 rather than serve an unsigned answer, so they never emit
-      // it. positioning-snapshot still can. Worded so it stays true either way,
-      // and so `note` is never read as the signal for "is this signed?".
+      // Corrected 2026-08-01 (hardening plan §0.2), re-checked later the same
+      // day. The old text — "Present ONLY when the answer is returned unsigned
+      // (no publisher key configured)" — documented a fail-OPEN behavior the
+      // oracles behind this schema no longer have: address-reputation,
+      // pkg-verdict and sanctions-screen refuse with 503 rather than serve an
+      // unsigned answer, and the second hardening wave extended that to
+      // positioning-snapshot, liquidation-stream, evidence-pack, token-safety,
+      // reasoning-verdict, runtime-eol and threat-intel. No feed still emits an
+      // unsigned-answer note on a paid 200. The wording below stays true either
+      // way, and keeps `note` from being read as the signal for "is this
+      // signed?".
       description: "Optional diagnostic string — NOT part of the signed bytes, and NOT emitted by every feed. Oracles that fail closed on an unusable publisher key refuse with 503 instead of returning an unsigned answer, so they never set it; where it does appear the `attestation` is absent and the gateway X-BYTE-Attestation response header is the only receipt. Decide whether an answer is signed by checking for `attestation` — never infer it from the absence of `note`.",
     },
   },
@@ -1065,10 +1069,14 @@ const reasoningVerdictResponseSchema = {
     },
     attestation: payloadAttestationSchema,
     broadcast: broadcastDisabledSchema,
-    note: {
-      type: "string",
-      description: "Present ONLY when the verdict is returned unsigned (no publisher key configured).",
-    },
+    // `note` REMOVED 2026-08-01 (second hardening wave). It documented the
+    // unsigned-verdict fallback that data-feeds/reasoning-verdict/server.py no
+    // longer has: with no usable REASONING_VERDICT_PUB_KEY, /query now refuses
+    // with 503 "signing unavailable" before running inference instead of
+    // returning a 200 carrying the verdict unsigned plus a note. Its paid 200
+    // body is {answer, attestation, broadcast} and never carries a top-level
+    // `note`, so documenting one here promised a response shape the service
+    // cannot produce. Verified against the source, not the docs.
   },
   required: ["answer"],
 };
@@ -1078,13 +1086,21 @@ const reasoningVerdictResponseSchema = {
  *  feed that carries no in-body receipt (usc-statute — its provenance receipt is
  *  the gateway X-BYTE-Attestation response header). `note:false` for a feed that
  *  FAILS CLOSED on a missing publisher key (503) and therefore never returns an
- *  unsigned-answer note on a paid 200 — merchant-screen. The default note text
- *  below stays as-is BECAUSE it is still accurate for the feeds that use it:
- *  runtime-eol (data-feeds/runtime-eol/gate.py) and threat-intel
- *  (data-feeds/threat-intel/gate.py) both still set
- *  `note: "no publisher key configured — answer returned UNSIGNED"`. Verified
- *  against the live services 2026-08-01 (hardening plan §0.2) — do not "correct"
- *  it without re-reading them. */
+ *  unsigned-answer note on a paid 200.
+ *
+ *  UPDATE 2026-08-01 (second hardening wave): every remaining caller now passes
+ *  `note:false`. The earlier version of this comment recorded that the default
+ *  note text was still accurate for runtime-eol
+ *  (data-feeds/runtime-eol/gate.py) and threat-intel
+ *  (data-feeds/threat-intel/gate.py) because both still set
+ *  `note: "no publisher key configured — answer returned UNSIGNED"`, and told
+ *  the next reader not to "correct" it without re-reading them. Both were
+ *  re-read at the source and then changed in the same wave: each now refuses
+ *  with 503 before doing any work rather than serving an unsigned answer, so
+ *  neither can emit that note. evidence-pack (data-feeds/evidence-pack/
+ *  server.py) was hardened in the same wave and is the same case. The
+ *  `noteDesc` path survives for usc-statute, whose `note` is a
+ *  degraded/upstream-error string unrelated to signing. */
 function syncResponseWith(
   answerSchema: object,
   opts: { embeddedAttestation?: boolean; noteDesc?: string; note?: boolean } = {},
@@ -1092,13 +1108,17 @@ function syncResponseWith(
   const properties: Record<string, unknown> = { answer: answerSchema };
   if (opts.embeddedAttestation !== false) properties.attestation = payloadAttestationSchema;
   properties.broadcast = broadcastDisabledSchema;
-  if (opts.note !== false) {
-    properties.note = {
-      type: "string",
-      description:
-        opts.noteDesc ??
-        "Present ONLY when the answer is returned unsigned (no publisher key configured) — the gateway X-BYTE-Attestation header is then the only receipt.",
-    };
+  // `note` is OPT-IN and requires an explicit `noteDesc` (VETO wave-2 F2). The
+  // old default text — "Present ONLY when the answer is returned unsigned (no
+  // publisher key configured)" — described a fail-OPEN behavior no feed behind
+  // this helper still has, and it was reachable by simply omitting `opts`. That
+  // made the UNSAFE state the default: a future caller adding a feed here would
+  // silently republish the removed promise. Deleted, and emission now requires
+  // the caller to say what the note actually means. `note: false` is still
+  // accepted (and passed explicitly by every current caller that has no note) so
+  // the intent stays readable at the call site.
+  if (opts.note !== false && opts.noteDesc) {
+    properties.note = { type: "string", description: opts.noteDesc };
   }
   return { type: "object", properties, required: ["answer"] };
 }
@@ -1263,9 +1283,17 @@ const merchantScreenAnswerSchema = {
   required: ["v", "verdict", "score", "reasons", "signals", "methodology"],
 };
 
-const runtimeEolResponseSchema = syncResponseWith(runtimeEolAnswerSchema);
-const threatIntelResponseSchema = syncResponseWith(threatIntelAnswerSchema);
-const evidencePackResponseSchema = syncResponseWith(evidencePackAnswerSchema);
+// runtime-eol, threat-intel and evidence-pack all lost their unsigned-answer
+// variant in the 2026-08-01 hardening waves: each now refuses with 503 "signing
+// unavailable" before doing any work rather than returning a 200 carrying an
+// unsigned answer plus a soft note (data-feeds/runtime-eol/gate.py,
+// data-feeds/threat-intel/gate.py, data-feeds/evidence-pack/server.py — the
+// fail-closed check at the top of each /query). Their paid 200 body never
+// carries a top-level `note`, so documenting one here promised a response shape
+// the services cannot produce. Verified against the source.
+const runtimeEolResponseSchema = syncResponseWith(runtimeEolAnswerSchema, { note: false });
+const threatIntelResponseSchema = syncResponseWith(threatIntelAnswerSchema, { note: false });
+const evidencePackResponseSchema = syncResponseWith(evidencePackAnswerSchema, { note: false });
 // merchant-screen has NO unsigned-answer variant: when signing is requested and
 // the publisher key is unusable it refuses the query with 503 rather than return
 // a 200 carrying an unsigned verdict plus a soft note
