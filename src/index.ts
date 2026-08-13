@@ -321,6 +321,17 @@ const PAYMENT_CHALLENGE_DESCRIPTION: Record<string, string> = {
   // disclosures inline at the pay decision, pointer for the full text.
   "merchant-screen":
     "Pre-settlement merchant screen: signed ALLOW/WARN/BLOCK on (domain, payTo, price) before you settle. Queries are logged (domain, payTo, price); screening is not covert — the merchant sees the probe. Full disclosure: https://x402.payperbyte.io/feeds",
+  // 2026-08-13: the KYA repositioning (config.ts, founder GO 08-12) pushed the
+  // catalog descriptions past the ~300-char challenge budget (555/503 chars),
+  // and reasoning-verdict (422) predated the rule. Compact forms below keep the
+  // scope/advisory clauses inline at the pay decision; the full copy stays on
+  // /feeds, /openapi.json and agent.json unchanged.
+  "address-reputation":
+    "Know-Your-Agent counterparty screening — reputation pillar. Signed ALLOW/WARN/BLOCK verdict on (domain, receiving address, amount, chain) before you release USDC. Screens the counterparty tuple you supply — not the calling agent's identity. Full method + scope: https://x402.payperbyte.io/feeds",
+  "sanctions-screen":
+    "Know-Your-Agent counterparty screening — sanctions pillar. Signed OFAC SDN + Consolidated screen on an address or name, pinned to the exact list-state (date + sha256). Screens the counterparty you supply — not the calling agent's identity. Full scope: https://x402.payperbyte.io/feeds",
+  "reasoning-verdict":
+    "Verify-before-act risk oracle: POST an action context and get a signed ALLOW/WARN/BLOCK/ABSTAIN verdict + 0-100 score + reasons from a LOCAL model (no data egress). Advisory: the receipt proves provenance/integrity, not correctness. Full method: https://x402.payperbyte.io/feeds",
 };
 
 const paymentRoutes: Record<string, any> = {};
@@ -353,6 +364,21 @@ for (const feed of feedRegistry) {
       mimeType: "application/json",
       extensions: getExtensions(feed.id, false),
     };
+  }
+}
+
+// Challenge-size ratchet (the 2026-07-29 class): clients echo the challenge's
+// resource back inside their payment envelope, and CDP's verify schema 400s an
+// oversized payload SILENTLY — an over-budget description here loses the sale,
+// not just the listing (Bazaar's own quality cap is 500). Warn, don't throw: a
+// copy edit must never down the gateway, but it must never ship quietly either.
+for (const [route, routeCfg] of Object.entries(paymentRoutes)) {
+  const descLen = (routeCfg.description ?? "").length;
+  if (descLen > 300) {
+    console.warn(
+      `[challenge-desc] ${route}: description is ${descLen} chars (>300 budget) — ` +
+        `add a PAYMENT_CHALLENGE_DESCRIPTION override (2026-07-29 verify-400 class)`,
+    );
   }
 }
 
