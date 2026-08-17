@@ -1794,8 +1794,8 @@ app.post("/feeds/sanctions-screen", async (req, res) => {
     });
     const text = await upstream.text();
     if (upstream.ok) {
-      // EVIDENCE TTL (staged 2026-08-17, uncommitted — see
-      // scratchpad/EVIDENCE_TTL_CHANGE.md): this is the ONLY call site passing
+      // EVIDENCE TTL (shipped 2026-08-17 in ef78663 — see
+      // docs/EVIDENCE_TTL.md): this is the ONLY call site passing
       // { feed } — sanctions-screen is the sole entry in attestation.ts's
       // EVIDENCE_FEED_IDS allowlist, so this is the ONLY response whose
       // receipt deadline differs from the 300s default. Every other

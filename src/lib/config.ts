@@ -468,8 +468,8 @@ export const feedRegistry: FeedMetadata[] = [
   // pkg-verdict: decision-priced $0.10 — install-gate verdict, same tier as address-reputation.
   customPricedFeed("pkg-verdict", "Package Verdict Oracle", "Signed ALLOW/WARN/BLOCK on installing a package@version: OSV.dev malicious-corpus + typosquat distance + registry signals. Verify before you install.", "on-demand", 2500, "general", "100000"),
   // sanctions-screen: decision-priced $0.10 — compliance go/no-go, same tier as address-reputation.
-  // EVIDENCE TTL (staged 2026-08-17, uncommitted; see
-  // scratchpad/EVIDENCE_TTL_CHANGE.md): sanctions-screen is the sole entry in
+  // EVIDENCE TTL (shipped 2026-08-17 in ef78663; see
+  // docs/EVIDENCE_TTL.md): sanctions-screen is the sole entry in
   // attestation.ts's EVIDENCE_FEED_IDS allowlist, so its X-BYTE-Attestation
   // receipt now mints a 10-year (315,360,000s) deadline instead of the 300s
   // default — a far-future FINITE deadline, never 0 (0 hard-reverts the

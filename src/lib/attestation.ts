@@ -50,8 +50,8 @@ const VERIFYING_CONTRACT = (process.env.ATTESTATION_VERIFYING_CONTRACT ||
 
 const ATTESTATION_TTL_S = Number(process.env.ATTESTATION_TTL_S || "300");
 
-// ── Per-feed evidence TTL — SINGLE SEAM (staged 2026-08-17, uncommitted; see
-// scratchpad/EVIDENCE_TTL_CHANGE.md for the full writeup + revert steps).
+// ── Per-feed evidence TTL — SINGLE SEAM (shipped 2026-08-17 in ef78663; see
+// docs/EVIDENCE_TTL.md for the full writeup + revert steps).
 //
 // Evidence-grade feeds (durable compliance artifacts, e.g. sanctions-screen /
 // OFAC) need a receipt that outlives the 300s freshness window: a buyer who
