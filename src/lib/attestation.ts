@@ -50,6 +50,39 @@ const VERIFYING_CONTRACT = (process.env.ATTESTATION_VERIFYING_CONTRACT ||
 
 const ATTESTATION_TTL_S = Number(process.env.ATTESTATION_TTL_S || "300");
 
+// ── Per-feed evidence TTL — SINGLE SEAM (staged 2026-08-17, uncommitted; see
+// scratchpad/EVIDENCE_TTL_CHANGE.md for the full writeup + revert steps).
+//
+// Evidence-grade feeds (durable compliance artifacts, e.g. sanctions-screen /
+// OFAC) need a receipt that outlives the 300s freshness window: a buyer who
+// screened a counterparty in a prior period needs the *receipt* to stay
+// verifiable long after the *decision* has aged. Grounded design finding
+// (EVIDENCE_TTL_DESIGN.md, 2026-08-15): deadline=0 ("never expires") is NOT
+// safe — it hard-reverts the on-chain verifier
+// (DataStreamLib.sol:514 `if (block.timestamp > att.deadline) revert
+// AttestationExpired()` — block.timestamp is always > 0, so 0 always
+// reverts) and is rejected as already-expired by 4 of the estate's 5
+// verifiers (mcp-server, sdk, both conformance verifiers). So: a far-future
+// FINITE deadline, not 0.
+//
+// EVIDENCE_FEED_IDS is the ONLY allowlist. A feed id NOT in this set is
+// completely unaffected — ttlForFeed falls through to the unchanged
+// ATTESTATION_TTL_S default (300s) exactly as before this change. Revert by
+// emptying the Set (or deleting these two consts + the ttlForFeed branch);
+// no other file needs to change on revert (source-only — the running gateway
+// still serves the OLD compiled dist/ until rebuilt + restarted, see the
+// deploy/revert steps in EVIDENCE_TTL_CHANGE.md).
+const EVIDENCE_TTL_S = 315_360_000; // 10 years — far-future finite, never 0
+const EVIDENCE_FEED_IDS: ReadonlySet<string> = new Set(["sanctions-screen"]);
+
+/** Resolve the attestation TTL (seconds) for a feed id. Unlisted or absent
+ *  feed id → unchanged ATTESTATION_TTL_S default. Exported so the allowlist
+ *  is independently testable (diff resolved TTLs before/after per feed). */
+export function ttlForFeed(feed?: string): number {
+  if (feed && EVIDENCE_FEED_IDS.has(feed)) return EVIDENCE_TTL_S;
+  return ATTESTATION_TTL_S;
+}
+
 const TYPES = {
   PayloadAttestation: [
     { name: "publisher", type: "address" },
@@ -102,11 +135,14 @@ export function attestationDomain(): AttestationDomain {
  * Sign an EIP-712 PayloadAttestation over `bodyBytes` (the exact response body).
  * Returns null when no attestation key is configured (attestation disabled).
  */
-export async function signCanonicalBytes(bodyBytes: Uint8Array): Promise<ByteAttestation | null> {
+export async function signCanonicalBytes(
+  bodyBytes: Uint8Array,
+  opts?: { feed?: string },
+): Promise<ByteAttestation | null> {
   if (!account) return null;
   const payloadHash = keccak256(bodyBytes);
   const payloadLength = bodyBytes.length;
-  const deadline = Math.floor(Date.now() / 1000) + ATTESTATION_TTL_S;
+  const deadline = Math.floor(Date.now() / 1000) + ttlForFeed(opts?.feed);
   const domain = attestationDomain();
   const signature = await account.signTypedData({
     domain,
@@ -136,9 +172,13 @@ export async function signCanonicalBytes(bodyBytes: Uint8Array): Promise<ByteAtt
  * res.json(). Delegates to sendAttestedRaw, so it inherits the fail-closed
  * no-key refusal documented at the top of this file.
  */
-export async function sendAttested(res: import("express").Response, obj: unknown): Promise<void> {
+export async function sendAttested(
+  res: import("express").Response,
+  obj: unknown,
+  opts?: { feed?: string },
+): Promise<void> {
   const body = JSON.stringify(obj);
-  await sendAttestedRaw(res, body);
+  await sendAttestedRaw(res, body, opts);
 }
 
 /**
@@ -153,7 +193,11 @@ export async function sendAttested(res: import("express").Response, obj: unknown
  * posture note at the top of this file. Callers do nothing after awaiting this,
  * so the refusal is the whole response.
  */
-export async function sendAttestedRaw(res: import("express").Response, body: string): Promise<void> {
+export async function sendAttestedRaw(
+  res: import("express").Response,
+  body: string,
+  opts?: { feed?: string },
+): Promise<void> {
   if (!account) {
     // One loud line per refusal: this is an operator misconfiguration, and the
     // 503 is the only symptom a buyer sees. No body/key material is logged.
@@ -170,7 +214,7 @@ export async function sendAttestedRaw(res: import("express").Response, body: str
     });
     return;
   }
-  const att = await signCanonicalBytes(new TextEncoder().encode(body));
+  const att = await signCanonicalBytes(new TextEncoder().encode(body), opts);
   res.type("application/json");
   if (att) res.setHeader("X-BYTE-Attestation", JSON.stringify(att));
   res.send(body);

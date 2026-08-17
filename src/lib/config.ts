@@ -468,7 +468,16 @@ export const feedRegistry: FeedMetadata[] = [
   // pkg-verdict: decision-priced $0.10 — install-gate verdict, same tier as address-reputation.
   customPricedFeed("pkg-verdict", "Package Verdict Oracle", "Signed ALLOW/WARN/BLOCK on installing a package@version: OSV.dev malicious-corpus + typosquat distance + registry signals. Verify before you install.", "on-demand", 2500, "general", "100000"),
   // sanctions-screen: decision-priced $0.10 — compliance go/no-go, same tier as address-reputation.
-  customPricedFeed("sanctions-screen", "Sanctions Screen Oracle", "Know-Your-Agent (KYA) counterparty screening — sanctions pillar. Signed, version-pinned OFAC SDN + Consolidated screening on an address or name; every answer embeds the pinned list-state (date + sha256) it was judged against. Primary source: official U.S. Treasury Sanctions List Service exports incl. the digital-currency address annex, parsed and content-sha256-pinned first-party — not a resold vendor list. Scope: screens the counterparty you supply — not identity verification of the calling agent.", "on-demand", 2500, "legal", "100000"),
+  // EVIDENCE TTL (staged 2026-08-17, uncommitted; see
+  // scratchpad/EVIDENCE_TTL_CHANGE.md): sanctions-screen is the sole entry in
+  // attestation.ts's EVIDENCE_FEED_IDS allowlist, so its X-BYTE-Attestation
+  // receipt now mints a 10-year (315,360,000s) deadline instead of the 300s
+  // default — a far-future FINITE deadline, never 0 (0 hard-reverts the
+  // on-chain verifier and is rejected as expired by 4/5 downstream
+  // verifiers; see EVIDENCE_TTL_DESIGN.md). Disclosure sentence appended
+  // below per brand-honesty §1: this is a freshness-window change, not a
+  // correctness claim — "durability", never "never expires".
+  customPricedFeed("sanctions-screen", "Sanctions Screen Oracle", "Know-Your-Agent (KYA) counterparty screening — sanctions pillar. Signed, version-pinned OFAC SDN + Consolidated screening on an address or name; every answer embeds the pinned list-state (date + sha256) it was judged against. Primary source: official U.S. Treasury Sanctions List Service exports incl. the digital-currency address annex, parsed and content-sha256-pinned first-party — not a resold vendor list. Scope: screens the counterparty you supply — not identity verification of the calling agent. Receipt deadline: this feed's EIP-712 receipt is minted with a 10-year freshness window (not the platform's usual 300s), by design — evidence-grade compliance records need to stay independently verifiable long after the screening decision itself has aged. This is a durability choice, not a licence to act on stale data: the receipt still proves only which key signed which exact bytes — it carries no signed observation time, so it never establishes WHEN the screening ran (an external existence-in-time anchor is what would), and never that the screening result is still current. Re-screen before relying on an old answer for a new decision.", "on-demand", 2500, "legal", "100000"),
   // reasoning-verdict: GPU-backed local-LLM verify-before-act oracle. Compute-priced
   // $0.10 (decision-oracle tier) — an agent about to act on a message/payload/proposal
   // gets a signed ALLOW/WARN/BLOCK/ABSTAIN + reasons it verifies before acting. The
