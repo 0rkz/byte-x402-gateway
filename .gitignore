@@ -4,3 +4,5 @@ dist/
 .env.attestation
 .env.base-leftover
 *.log
+.env.attestation*
+.env.cdp-settlement
