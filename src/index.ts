@@ -1098,6 +1098,22 @@ function attestationReceiptBlock() {
     scheme: "EIP712-PayloadAttestation",
     domain: attestationDomain(),
     attester: attesterAddress(),
+    // Rotation boundary disclosure. A signature is forever: receipts signed by a
+    // retired key still recover to it (sanctions-screen mints 10-year deadlines,
+    // and @foreseal/gate archival mode ignores expiry by design), so the only
+    // honest mitigation for a rotated-away key is this dated public boundary —
+    // treat anything recovering to a retired address after its retiredAt as
+    // untrusted. Timestamp comes from env so the code ships before the cutover
+    // moment is known; field is absent until GATEWAY_ATTESTER_RETIRED_AT is set.
+    retiredAttesters: process.env.GATEWAY_ATTESTER_RETIRED_AT
+      ? [
+          {
+            address: "0x77c86a5367d941091a31BC97104609F2Db33C472",
+            retiredAt: process.env.GATEWAY_ATTESTER_RETIRED_AT,
+            reason: "planned rotation following a confirmed key exposure",
+          },
+        ]
+      : undefined,
     verify:
       "keccak256(responseBody) === payloadHash AND " +
       "recoverTypedDataAddress(domain, {PayloadAttestation}, message, signature) === attester",
