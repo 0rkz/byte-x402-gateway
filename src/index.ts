@@ -1386,6 +1386,10 @@ app.get("/.well-known/402index-verify.txt", (_req, res) => {
  * `Cache-Control: no-store` is required because Cloudflare fronts this host
  * and treats `.txt` as a default-cacheable extension — without it CF could
  * pin a stale token, or worse, a stale 404 after the token is set.
+ * The 200 is written via `res.end` (not `res.send`) so Express never attaches
+ * an ETag or honors a conditional `If-None-Match`/`If-Modified-Since` — those
+ * live inside `res.send`'s freshness check and could otherwise let a stale
+ * re-fetch get a 304 with an empty body instead of the current token.
  */
 app.get("/.well-known/x402list.txt", (_req, res) => {
   const proofPath = process.env.X402LIST_PROOF_FILE || path.join(process.cwd(), "deploy/base/x402list.txt");
@@ -1400,7 +1404,11 @@ app.get("/.well-known/x402list.txt", (_req, res) => {
     res.status(404).type("text/plain").send("not configured");
     return;
   }
-  res.type("text/plain; charset=utf-8").send(token);
+  res.status(200);
+  res.set("Content-Type", "text/plain; charset=utf-8");
+  res.set("Cache-Control", "no-store, max-age=0");
+  res.set("Content-Length", Buffer.byteLength(token, "utf8").toString());
+  res.end(token);
 });
 
 /**
