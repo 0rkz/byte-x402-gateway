@@ -114,7 +114,7 @@ async function freeChecks(): Promise<{ attester: string | null }> {
   const feeds = await fetch(`${GATEWAY_URL}/feeds`).then((r) => r.json()).catch(() => null);
   const arFeed = feeds?.feeds?.find((f: any) => f.id === "address-reputation");
   check("/feeds lists address-reputation", Boolean(arFeed));
-  check("address-reputation priced $0.05", arFeed?.priceAtomic === "50000", `got ${arFeed?.priceAtomic}`);
+  check("address-reputation priced $0.10", arFeed?.priceAtomic === "100000", `got ${arFeed?.priceAtomic}`);
 
   const openapi = await fetch(`${GATEWAY_URL}/openapi.json`).then((r) => r.json()).catch(() => null);
   check("/openapi.json has POST /feeds/address-reputation", Boolean(openapi?.paths?.["/feeds/address-reputation"]?.post));
@@ -129,6 +129,27 @@ async function freeChecks(): Promise<{ attester: string | null }> {
   for (const alias of ["/x402-manifest", "/.well-known/x402"]) {
     const r = await fetch(`${GATEWAY_URL}${alias}`).catch(() => null);
     check(`${alias} alias 200`, r?.status === 200);
+  }
+
+  // SOFT check — the x402-list.com domain-proof token is set independently of
+  // this smoke run (rotated by writing X402LIST_PROOF_FILE, no restart), so
+  // either state is healthy: served correctly (200) or not configured yet
+  // (fail-closed 404). Only an unexpected status or a malformed 200 fails.
+  const x402list = await fetch(`${GATEWAY_URL}/.well-known/x402list.txt`).catch(() => null);
+  if (x402list && x402list.status === 200) {
+    const ct = x402list.headers.get("content-type") ?? "";
+    const body = await x402list.text();
+    check(
+      "/.well-known/x402list.txt is 200-text/plain-nonempty or 404 (fail-closed)",
+      ct.startsWith("text/plain") && body.length > 0 && body === body.trim(),
+      `200 but content-type=${ct} body=${JSON.stringify(body.slice(0, 80))}`,
+    );
+  } else {
+    check(
+      "/.well-known/x402list.txt is 200-text/plain-nonempty or 404 (fail-closed)",
+      x402list?.status === 404,
+      `got ${x402list?.status ?? "fetch error"}`,
+    );
   }
 
   const agent = await fetch(`${GATEWAY_URL}/.well-known/agent.json`).then((r) => r.json()).catch(() => null);

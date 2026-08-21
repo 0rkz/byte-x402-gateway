@@ -8,6 +8,8 @@
  * @see https://www.x402.org
  */
 
+import fs from "fs";
+import path from "path";
 import express from "express";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
@@ -1369,6 +1371,36 @@ app.get("/.well-known/agent-registration.json", (_req, res) => {
  */
 app.get("/.well-known/402index-verify.txt", (_req, res) => {
   res.type("text/plain").send(process.env.INDEX402_VERIFY_HASH || "");
+});
+
+/**
+ * x402-list.com domain-verification file. x402-list.com fetches this to
+ * confirm we own x402.payperbyte.io (the host our PayPerByte row is listed
+ * under) before flipping it to verified. Set the token by writing it to
+ * X402LIST_PROOF_FILE (default deploy/base/x402list.txt) — read fresh from
+ * disk on every request, so rotating the token needs no restart.
+ *
+ * Fail-closed: a missing file or empty content serves 404 (never an empty
+ * 200) — mirrors the fail-closed doctrine everywhere else in this gateway
+ * rather than the 402index route's empty-string-200 behavior above.
+ * `Cache-Control: no-store` is required because Cloudflare fronts this host
+ * and treats `.txt` as a default-cacheable extension — without it CF could
+ * pin a stale token, or worse, a stale 404 after the token is set.
+ */
+app.get("/.well-known/x402list.txt", (_req, res) => {
+  const proofPath = process.env.X402LIST_PROOF_FILE || path.join(process.cwd(), "deploy/base/x402list.txt");
+  let token = "";
+  try {
+    token = fs.readFileSync(proofPath, "utf8").trim();
+  } catch {
+    // Missing/unreadable file — fall through to the 404 below (fail-closed).
+  }
+  res.set("Cache-Control", "no-store, max-age=0");
+  if (!token) {
+    res.status(404).type("text/plain").send("not configured");
+    return;
+  }
+  res.type("text/plain; charset=utf-8").send(token);
 });
 
 /**
