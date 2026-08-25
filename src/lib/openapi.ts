@@ -39,7 +39,7 @@ import { config, feedRegistry, networkInfo } from "./config.js";
 // buildOpenApiDoc()'s explicit `feed("liquidation-stream")` lookup throws
 // (feedRegistry has no entry for it), 500ing the free /openapi.json route —
 // caught by gate-engagement-check.mjs's free-route-reachable assertion.
-const POST_ORACLE_IDS = new Set(["address-reputation", "pkg-verdict", "sanctions-screen", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel", "merchant-screen", "cctp-attestation-latency"]);
+const POST_ORACLE_IDS = new Set(["address-reputation", "pkg-verdict", "sanctions-screen", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel", "merchant-screen", "cctp-attestation-latency", "regime-signal"]);
 
 /** Per-oracle request-body schema, keyed by feed id. Each oracle takes a
  *  different question/claim/citation field plus optional on-chain delivery
@@ -288,6 +288,22 @@ export const ORACLE_REQUEST_SCHEMAS: Record<string, Record<string, unknown>> = {
       },
     },
   },
+  "regime-signal": {
+    type: "object",
+    properties: {
+      asset: {
+        type: "string",
+        enum: ["BTC", "ETH"],
+        description: "The asset to classify. SOL is closed as an option: both Chainlink SOL/USD feeds on Base have an 86,400s heartbeat, unusable for 4h/24h windows.",
+      },
+      h: {
+        type: "integer",
+        enum: [4, 24],
+        description: "Horizon in hours — 4 or 24. rv_threshold/rv_call/confidence are computed against this SAME horizon's own non-overlapping window history; regime always uses trailing 24h data regardless of h.",
+      },
+    },
+    required: ["asset", "h"],
+  },
 };
 
 /** Per-oracle EXAMPLE request body — a concrete, schema-valid payload an agent can
@@ -311,6 +327,7 @@ export const ORACLE_REQUEST_EXAMPLES: Record<string, Record<string, unknown>> = 
   "liquidation-stream": { asset: "BTC" },
   "positioning-snapshot": { assets: ["BTC", "ETH"] },
   "cctp-attestation-latency": { chain: "base", path: "fast" },
+  "regime-signal": { asset: "BTC", h: 4 },
 };
 
 /** Per-oracle EXAMPLE response excerpt → the Bazaar declaration's `output.example`

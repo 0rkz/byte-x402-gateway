@@ -11,6 +11,8 @@
 import fs from "fs";
 import path from "path";
 import express from "express";
+import helmet from "helmet";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
@@ -55,6 +57,75 @@ app.set("trust proxy", 1);
 
 // Don't advertise the framework (no `X-Powered-By: Express` header).
 app.disable("x-powered-by");
+
+// ── Security headers ────────────────────────────────────────────────────
+// helmet's HTML-oriented defaults would fight this API's own deliberate
+// choices: contentSecurityPolicy/crossOriginEmbedderPolicy are meant for
+// browser-rendered documents (this serves JSON only) and could otherwise
+// send unexpected directives to agent HTTP clients; crossOriginResourcePolicy
+// defaults to same-origin, which would contradict the wildcard CORS below
+// (a strict browser honors CORP independently of CORS and could block the
+// cross-origin fetch outright). Every other helmet default (nosniff,
+// referrer-policy, frameguard, HSTS, etc.) is safe for a JSON API and applies
+// as-is. The Cloudflare-dashboard HSTS rule is separate and unaffected.
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  }),
+);
+
+// ── Rate limiting ────────────────────────────────────────────────────────
+// Behind the cloudflared tunnel (see `trust proxy` above), req.ip resolves
+// via X-Forwarded-For — but Cloudflare's own CF-Connecting-IP header is the
+// authoritative real-client-IP source at the edge, so key on that first and
+// only fall back to req.ip for direct/non-CF traffic (e.g. local testing).
+// Both branches go through ipKeyGenerator(), which normalizes IPv6 addresses
+// to a /56 prefix — without it, a client can bypass any per-IP limit by
+// rotating the suffix of their own IPv6 address (express-rate-limit warns
+// and refuses to start on a raw-IP keyGenerator for exactly this reason).
+function clientIpKey(req: express.Request): string {
+  const cfIp = req.headers["cf-connecting-ip"];
+  if (typeof cfIp === "string" && cfIp) return ipKeyGenerator(cfIp);
+  return ipKeyGenerator(req.ip ?? "unknown");
+}
+
+// General ceiling across the whole API, generous enough that no legitimate
+// agent traffic or x402 payment flow (discovery hit + paid retry, per
+// delivery) comes close to it — this exists to blunt raw floods, not to
+// throttle real usage.
+const generalLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: clientIpKey,
+});
+
+// Tighter limit for the free, unauthenticated discovery surfaces (catalog,
+// OpenAPI doc, .well-known manifests) — these cost nothing to hit and have
+// no economic self-limiting the way a paid /feeds/<slug> call does, so they
+// are the cheapest DoS/scrape target. Still generous relative to how often
+// any real crawler or agent re-fetches a catalog.
+const discoveryLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: clientIpKey,
+});
+
+// General rate ceiling. Placed BEFORE the CORS/OPTIONS-preflight
+// short-circuit below (FD finding, 2026-08-25): OPTIONS never reaches the
+// payment gate or any real route, so a flood of bare OPTIONS requests is a
+// free way to hammer the server if the limiter sits after that short-circuit
+// — FD reproduced 400x OPTIONS producing zero 429s with the old placement.
+// Counting OPTIONS here means a client that trips the limit gets a 429 with
+// no CORS headers on its next preflight too (the CORS middleware never runs
+// for it) — an accepted tradeoff at 300 req/min, where real single-client
+// traffic essentially never gets close.
+app.use(generalLimiter);
 
 // ── CORS (browser preflight + x402 header exposure) ────────────────────────
 // This is a PUBLIC, credential-less read/pay API: any web origin (a dApp, an
@@ -204,7 +275,7 @@ function buildAccepts(priceAtomic: string) {
 // in-session — see the delist comments in lib/config.ts feedRegistry and the
 // 410-Gone stubs below) — removed from POST_ORACLES so neither the payment
 // gate nor the body-validation middleware treats them as live.
-const POST_ORACLES = new Set(["address-reputation", "pkg-verdict", "sanctions-screen", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel", "merchant-screen", "cctp-attestation-latency"]);
+const POST_ORACLES = new Set(["address-reputation", "pkg-verdict", "sanctions-screen", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel", "merchant-screen", "cctp-attestation-latency", "regime-signal"]);
 
 // ── Bazaar service metadata (PROD-15) ───────────────────────────────────────
 // CDP Bazaar catalogs `resource.serviceName` / `resource.tags` from the
@@ -337,6 +408,8 @@ const PAYMENT_CHALLENGE_DESCRIPTION: Record<string, string> = {
     "Verify-before-act risk oracle: POST an action context and get a signed ALLOW/WARN/BLOCK/ABSTAIN verdict + 0-100 score + reasons from a LOCAL model (no data egress). Advisory: the receipt proves provenance/integrity, not correctness. Full method: https://x402.payperbyte.io/feeds",
   "cctp-attestation-latency":
     "Measured Circle CCTP v2 attestation latency: Fast/Standard distributions (never blended), first-party burn polling. Bounded observations; percentiles withheld below sample floor. Embedded EIP-712 receipt proves who signed the bytes, not that latency holds. Full: https://x402.payperbyte.io/feeds",
+  "regime-signal":
+    "BTC/ETH regime + realized-vol above/below call, 4h or 24h horizon. Signed EIP-712 delivery receipt, anchored on Base via EAS; scoring is a published deterministic rule against public Chainlink rounds, independently recomputable. Full method: https://x402.payperbyte.io/feeds",
 };
 
 const paymentRoutes: Record<string, any> = {};
@@ -964,7 +1037,7 @@ app.use((req, res, next) => {
 // ---------------------------------------------------------------------------
 
 /** Feed discovery endpoint -- returns all available feeds with pricing and PQS scores. */
-app.get("/feeds", (_req, res) => {
+app.get("/feeds", discoveryLimiter, (_req, res) => {
   const networks = [config.network];
   if (config.solanaPayTo && ExactSvmScheme) networks.push(config.solanaNetwork);
 
@@ -1004,7 +1077,7 @@ app.get("/feeds", (_req, res) => {
  * x402scan and other agent discovery layers read this first (precedence over
  * the runtime 402). Free endpoint — must not be payment-gated.
  */
-app.get("/openapi.json", (_req, res) => {
+app.get("/openapi.json", discoveryLimiter, (_req, res) => {
   res.json(buildOpenApiDoc());
 });
 
@@ -1102,6 +1175,17 @@ const ORACLE_SIGNERS: Record<string, string> = Object.fromEntries(
       // this session (out of scope, founder decision — same "no hardcoded
       // fallback" discipline as every other entry here).
       ["cctp-attestation-latency", process.env.CCTP_ATTESTATION_LATENCY_SIGNER],
+      // regime-signal: unset — this map is PURELY ADVISORY (traced its only
+      // consumer below: it publishes an independently-pinnable expected
+      // signer address in the verify-recipe manifest; a feed absent from it
+      // still embeds a fully self-consistent, independently-recoverable
+      // `attestation.signer` in every response — so membership here is NOT
+      // required for the feed to function or to be paid for). No key
+      // provisioned from this session; wire REGIME_SIGNAL_SIGNER once the
+      // upstream (@bytedev/receipts byte-regime-signal.service) is deployed
+      // and its receipt-signing address is safely read off its own /healthz
+      // — same "no hardcoded fallback" discipline as every other entry here.
+      ["regime-signal", process.env.REGIME_SIGNAL_SIGNER],
     ] as [string, string | undefined][]
   ).filter((entry): entry is [string, string] => Boolean(entry[1])),
 );
@@ -1274,7 +1358,7 @@ function buildX402Manifest() {
   };
 }
 
-app.get("/.well-known/x402.json", (_req, res) => {
+app.get("/.well-known/x402.json", discoveryLimiter, (_req, res) => {
   res.json(buildX402Manifest());
 });
 
@@ -1283,7 +1367,7 @@ app.get("/.well-known/x402.json", (_req, res) => {
 // those literals. Bind both to the same canonical manifest so neither 404s.
 // `/.well-known/x402.json` remains the canonical URL (advertised in the
 // agent card, OpenAPI, and the www pointer).
-app.get(["/x402-manifest", "/.well-known/x402"], (_req, res) => {
+app.get(["/x402-manifest", "/.well-known/x402"], discoveryLimiter, (_req, res) => {
   res.json(buildX402Manifest());
 });
 
@@ -1294,7 +1378,7 @@ app.get(["/x402-manifest", "/.well-known/x402"], (_req, res) => {
  * manifest, the hosted MCP server). Free, ungated; self-updates from
  * feedRegistry.
  */
-app.get("/.well-known/agent.json", (_req, res) => {
+app.get("/.well-known/agent.json", discoveryLimiter, (_req, res) => {
   const net = networkInfo();
   res.json({
     name: "PayPerByte",
@@ -1352,7 +1436,7 @@ app.get("/.well-known/agent.json", (_req, res) => {
  * No supportedTrust field: absent = discovery-only per spec — no trust-model
  * or traction claims.
  */
-app.get("/.well-known/agent-registration.json", (_req, res) => {
+app.get("/.well-known/agent-registration.json", discoveryLimiter, (_req, res) => {
   const agentId = process.env.ERC8004_AGENT_ID;
   res.json({
     type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
@@ -1382,7 +1466,7 @@ app.get("/.well-known/agent-registration.json", (_req, res) => {
  * verification_hash returned by POST https://402index.io/api/v1/claim. Served
  * bare (no trailing newline), no redirect, <1KB — per the 402index spec.
  */
-app.get("/.well-known/402index-verify.txt", (_req, res) => {
+app.get("/.well-known/402index-verify.txt", discoveryLimiter, (_req, res) => {
   res.type("text/plain").send(process.env.INDEX402_VERIFY_HASH || "");
 });
 
@@ -1404,7 +1488,7 @@ app.get("/.well-known/402index-verify.txt", (_req, res) => {
  * live inside `res.send`'s freshness check and could otherwise let a stale
  * re-fetch get a 304 with an empty body instead of the current token.
  */
-app.get("/.well-known/x402list.txt", (_req, res) => {
+app.get("/.well-known/x402list.txt", discoveryLimiter, (_req, res) => {
   const proofPath = process.env.X402LIST_PROOF_FILE || path.join(process.cwd(), "deploy/base/x402list.txt");
   let token = "";
   try {
@@ -2125,6 +2209,57 @@ app.post("/feeds/cctp-attestation-latency", async (req, res) => {
   }
 });
 
+/**
+ * regime-signal — receipt-anchored regime/volatility signal (Plan 1,
+ * @bytedev/receipts). Body: { asset: "BTC"|"ETH", h: 4|24 } — the SIGNAL is
+ * served to any structurally-valid request. 200: { signal, receipt,
+ * signature, receipt_id } | { signal, receipt: null, receipt_reason }.
+ *
+ * UPDATED (superseded the earlier body-trust design flagged in the SH
+ * build report — founder-decided fix, see @bytedev/receipts
+ * src/lib/payment-context.ts and /methodology's receipt_minting section):
+ * the upstream now IGNORES payer/settlement_tx if present in req.body
+ * entirely — forwarding the caller's raw body (this route's only job) can
+ * never authenticate a receipt, since any caller can put whatever it wants
+ * there. A receipt only mints when the request carries a payment context
+ * the GATEWAY authenticated: X-BYTE-PAYMENT-CONTEXT (JSON) +
+ * X-BYTE-PAYMENT-CONTEXT-HMAC (HMAC-SHA256 over that JSON, keyed by a
+ * secret shared with the upstream). This route does NOT emit those headers
+ * yet — that's the Week-2 "receipts on every paid call" milestone, needs
+ * founder-visible design (where the gateway reads payer/settlement_tx from
+ * its own x402 settlement, and where GATEWAY_HMAC_SECRET is provisioned) —
+ * so every call through this route currently gets receipt:null, which is
+ * the correct, honest behavior for "no verified payment context was sent."
+ *
+ * Forwarded BYTE-FOR-BYTE (sendAttestedRaw), same pattern as cctp-attestation-latency above.
+ */
+app.post("/feeds/regime-signal", async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const upstream = await fetch(`${config.regimeSignalUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      // Bounded — a hung upstream must not hang the paying agent. Aborting
+      // throws into the catch below (502, settlement cancelled): FAIL CLOSED.
+      signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
+    });
+    const text = await upstream.text();
+    if (upstream.ok) {
+      await sendAttestedRaw(res, text);
+    } else {
+      // Do NOT forward the upstream's raw body/headers — it can carry the upstream
+      // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
+      // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
+      console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
+    }
+  } catch (err: any) {
+    logProxyFailure("regime-signal", err);
+    res.status(502).json({ error: "regime-signal proxy failed", detail: proxyFailureDetail(err) });
+  }
+});
+
 // BYTE Library publisher-backed feeds — generic handler serving the current
 // payload. Driven by feedRegistry; adding a publisher only requires editing
 // config.ts. fetchFeedPayload() (feeds/generic.ts) prefers each feed's live
@@ -2239,8 +2374,8 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 // Start
 // ---------------------------------------------------------------------------
 
-app.listen(config.port, () => {
-  console.log(`[x402-gateway] Byte Protocol data feed gateway running on port ${config.port}`);
+app.listen(config.port, config.host, () => {
+  console.log(`[x402-gateway] Byte Protocol data feed gateway running on ${config.host}:${config.port}`);
   console.log(`[x402-gateway] EVM Network: ${config.network}`);
   console.log(`[x402-gateway] EVM PayTo: ${config.payTo}`);
   if (config.solanaPayTo && ExactSvmScheme) {

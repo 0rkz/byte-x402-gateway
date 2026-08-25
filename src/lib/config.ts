@@ -6,6 +6,12 @@ dotenv.config();
  * All values have sensible defaults for local development on Arbitrum Sepolia.
  */
 export const config = {
+  /**
+   * HTTP bind address — loopback by default. cloudflared connects via
+   * localhost:3402 (confirmed in ~/.cloudflared/config.yml); nothing needs
+   * this gateway reachable off-box directly.
+   */
+  host: process.env.HOST || "127.0.0.1",
   /** HTTP server port */
   port: parseInt(process.env.PORT || "3402", 10),
   /** Wallet address that receives x402 payments (USDC) */
@@ -188,6 +194,17 @@ export const config = {
    * surface. Founder-approved 2026-08-25 (live at $0.01/call, 10000 atomic).
    */
   cctpAttestationLatencyUrl: process.env.CCTP_ATTESTATION_LATENCY_URL || "http://127.0.0.1:8097",
+  /**
+   * regime-signal oracle URL — receipt-anchored regime/volatility signal
+   * (Plan 1, @bytedev/receipts). Every paid call is bound to a signed
+   * EIP-712 DeliveryReceipt anchored on Base via EAS; scoring is a
+   * published, deterministic rule against Chainlink rounds anyone can
+   * rerun (see the upstream's own GET /methodology). Runs on the same
+   * host (byte-regime-signal.service, port 8098; NOT installed as of this
+   * wiring — see receipts/systemd/); NOT exposed via cloudflared — this
+   * paywalled gateway route is its only public surface.
+   */
+  regimeSignalUrl: process.env.REGIME_SIGNAL_URL || "http://127.0.0.1:8098",
 };
 
 /**
@@ -547,6 +564,22 @@ export const feedRegistry: FeedMetadata[] = [
     2000,
     "general",
     "10000",
+  ),
+  // regime-signal — Plan 1 (receipt-anchored regime endpoint, @bytedev/receipts).
+  // $0.02/call (20000 atomic) per the plan's listed-peer-comparable pricing
+  // (peers cluster $0.01-0.07). Upstream (byte-regime-signal.service, port
+  // 8098) is NOT installed/running as of this wiring — this route will 502
+  // (upstream unreachable, settlement cancelled, fail-closed) until the
+  // service is deployed; wiring lands ahead of deploy so the two are
+  // reviewable separately.
+  customPricedFeed(
+    "regime-signal",
+    "Receipt-Anchored Regime Signal",
+    "BTC/ETH regime classification (trend_up/trend_down/range/high_vol) and a realized-vol above/below call, horizon 4h or 24h. Every response is bound to a signed EIP-712 DeliveryReceipt anchored on Base via EAS; the scoring rule is published and deterministic against public Chainlink rounds, independently recomputable by anyone — see the upstream's own GET /methodology and GET /track-record. v1-baseline model: a deterministic persistence/threshold rule, not a trained model — see /methodology for the exact published formula.",
+    "on-demand",
+    900,
+    "financial",
+    "20000",
   ),
 ];
 
