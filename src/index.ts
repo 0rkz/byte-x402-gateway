@@ -1092,10 +1092,15 @@ const ORACLE_SIGNERS: Record<string, string> = Object.fromEntries(
       // own /healthz (never derived from key material in this session) — same
       // "no hardcoded fallback" discipline as every other entry here.
       ["merchant-screen", process.env.MERCHANT_SCREEN_SIGNER],
-      // cctp-attestation-latency: same "no hardcoded fallback" discipline —
-      // unset until CCTP_ATTESTATION_LATENCY_SIGNER is populated from the
-      // feed's own /healthz (it does not currently expose one; same
-      // follow-up as the other 4 unexposed oracles above).
+      // cctp-attestation-latency: SET (FD 2026-08-25 HIGH-1 fix) — recovered
+      // independently twice (SH's own eth_account recompute + FD's separate
+      // adversarial recompute, both against a live signature, never the
+      // response's own claim) and now ALSO published live at the feed's own
+      // /healthz (:8097). Only pkg-verdict and positioning-snapshot remain
+      // unset among the POST oracles — neither exposes a signer via /healthz
+      // and neither has a captured-signature source; do NOT set them from
+      // this session (out of scope, founder decision — same "no hardcoded
+      // fallback" discipline as every other entry here).
       ["cctp-attestation-latency", process.env.CCTP_ATTESTATION_LATENCY_SIGNER],
     ] as [string, string | undefined][]
   ).filter((entry): entry is [string, string] => Boolean(entry[1])),

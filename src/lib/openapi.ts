@@ -274,7 +274,12 @@ export const ORACLE_REQUEST_SCHEMAS: Record<string, Record<string, unknown>> = {
     properties: {
       chain: {
         type: "string",
-        description: "Optional. Narrow to one source chain (e.g. \"base\", \"arbitrum\", \"optimism\"). Omit for every configured chain.",
+        // Exactly the collector's configured CHAINS (data-feeds/cctp-attestation-latency/
+        // collect.py) — an unrecognized chain must 400 pre-charge (FD 2026-08-25 MEDIUM-1:
+        // it previously fell through to a paid $0.01 empty no_data answer on a typo). Keep
+        // this in sync with collect.py's CHAINS keys if a chain is ever added/removed there.
+        enum: ["base", "arbitrum", "optimism"],
+        description: "Optional. Narrow to one source chain. Omit for every configured chain. An unrecognized value is a 400, not a paid empty answer.",
       },
       path: {
         type: "string",
@@ -422,20 +427,23 @@ export const ORACLE_RESPONSE_EXAMPLES: Record<string, Record<string, unknown>> =
   },
   "cctp-attestation-latency": {
     _note:
-      "Excerpt of a real answer (live service, 2026-08-25); hash/signature elided, other buckets " +
-      "trimmed. Every figure is a BOUNDED observation (burn -> first poll seeing complete), never " +
-      "an exact measurement; percentiles are withheld below an 8-measured-sample floor. Fast and " +
-      "Standard are separate settlement paths and are never blended into one percentile. The " +
-      "embedded EIP-712 receipt (domain chainId 421614 = Arbitrum Sepolia, a frozen signing " +
-      "namespace, not a settlement rail) proves who signed these exact bytes — not that the " +
-      "measured latency will hold for your own transfer.",
+      "Excerpt of a real answer (live service, 2026-08-25, post FD HIGH-2 clamp fix); " +
+      "hash/signature elided, other buckets trimmed. Every figure is a BOUNDED observation " +
+      "(burn -> first poll seeing complete), never an exact measurement — min_s is floored at " +
+      "0 (a bounded observation cannot precede the burn it bounds; an earlier example briefly " +
+      "shipped an unclamped negative value from L2-clock-skew artifacts, fixed 2026-08-25). " +
+      "Percentiles are withheld below an 8-measured-sample floor. Fast and Standard are " +
+      "separate settlement paths and are never blended into one percentile. The embedded " +
+      "EIP-712 receipt (domain chainId 421614 = Arbitrum Sepolia, a frozen signing namespace, " +
+      "not a settlement rail) proves who signed these exact bytes — not that the measured " +
+      "latency will hold for your own transfer.",
     answer: {
       query: { chain: "base", path: "fast" },
       distributions: {
         "base/fast": {
-          samples: 27715,
+          samples: 27753,
           measured_samples: 37,
-          min_s: -1,
+          min_s: 0,
           max_s: 7999,
           p50_s: 1753,
           p95_s: 7265,
@@ -444,7 +452,7 @@ export const ORACLE_RESPONSE_EXAMPLES: Record<string, Record<string, unknown>> =
           percentiles_withheld_because: null,
         },
       },
-      observation_count: 27715,
+      observation_count: 27753,
       coverage: { status: "observed" },
       ruleset: "cctp-lat-v1",
     },
