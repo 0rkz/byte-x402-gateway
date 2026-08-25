@@ -204,7 +204,7 @@ function buildAccepts(priceAtomic: string) {
 // in-session — see the delist comments in lib/config.ts feedRegistry and the
 // 410-Gone stubs below) — removed from POST_ORACLES so neither the payment
 // gate nor the body-validation middleware treats them as live.
-const POST_ORACLES = new Set(["address-reputation", "pkg-verdict", "sanctions-screen", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel", "merchant-screen"]);
+const POST_ORACLES = new Set(["address-reputation", "pkg-verdict", "sanctions-screen", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel", "merchant-screen", "cctp-attestation-latency"]);
 
 // ── Bazaar service metadata (PROD-15) ───────────────────────────────────────
 // CDP Bazaar catalogs `resource.serviceName` / `resource.tags` from the
@@ -233,6 +233,7 @@ const FEED_TAGS: Record<string, string[]> = {
   "pkg-verdict": ["payperbyte", "pkg-verdict", "supply-chain", "install-gate", "signed-verdict"],
   "reasoning-verdict": ["payperbyte", "reasoning-verdict", "verify-before-act", "local-llm", "signed-verdict"],
   "merchant-screen": ["payperbyte", "merchant-screen", "storefront-risk", "clone-detect", "signed-verdict"],
+  "cctp-attestation-latency": ["payperbyte", "cctp", "attestation-latency", "circle", "signed-measurement"],
 };
 
 /** Tags for a feed's Bazaar row — curated when listed above, else derived from
@@ -334,6 +335,8 @@ const PAYMENT_CHALLENGE_DESCRIPTION: Record<string, string> = {
     "Know-Your-Agent counterparty screening — sanctions pillar. Signed OFAC SDN + Consolidated screen on an address or name, pinned to the exact list-state (date + sha256). Screens the counterparty you supply — not the calling agent's identity. Full scope: https://x402.payperbyte.io/feeds",
   "reasoning-verdict":
     "Verify-before-act risk oracle: POST an action context and get a signed ALLOW/WARN/BLOCK/ABSTAIN verdict + 0-100 score + reasons from a LOCAL model (no data egress). Advisory: the receipt proves provenance/integrity, not correctness. Full method: https://x402.payperbyte.io/feeds",
+  "cctp-attestation-latency":
+    "Measured Circle CCTP v2 attestation latency: Fast/Standard distributions (never blended), first-party burn polling. Bounded observations; percentiles withheld below sample floor. Embedded EIP-712 receipt proves who signed the bytes, not that latency holds. Full: https://x402.payperbyte.io/feeds",
 };
 
 const paymentRoutes: Record<string, any> = {};
@@ -1089,6 +1092,11 @@ const ORACLE_SIGNERS: Record<string, string> = Object.fromEntries(
       // own /healthz (never derived from key material in this session) — same
       // "no hardcoded fallback" discipline as every other entry here.
       ["merchant-screen", process.env.MERCHANT_SCREEN_SIGNER],
+      // cctp-attestation-latency: same "no hardcoded fallback" discipline —
+      // unset until CCTP_ATTESTATION_LATENCY_SIGNER is populated from the
+      // feed's own /healthz (it does not currently expose one; same
+      // follow-up as the other 4 unexposed oracles above).
+      ["cctp-attestation-latency", process.env.CCTP_ATTESTATION_LATENCY_SIGNER],
     ] as [string, string | undefined][]
   ).filter((entry): entry is [string, string] => Boolean(entry[1])),
 );
@@ -2065,6 +2073,50 @@ app.post("/feeds/positioning-snapshot", async (req, res) => {
   } catch (err: any) {
     logProxyFailure("positioning-snapshot", err);
     res.status(502).json({ error: "positioning-snapshot proxy failed", detail: proxyFailureDetail(err) });
+  }
+});
+
+/**
+ * cctp-attestation-latency — measured Circle CCTP v2 attestation latency
+ * (data-feeds/cctp-attestation-latency/http_api.py, POST /query).
+ * Body: { chain?: string, path?: "fast"|"standard" } — both optional; omitting
+ * both returns every (chain, path) bucket.
+ * 200: { answer: { query, distributions, observation_count, coverage, ruleset,
+ *        readiness }, attestation: { … } } — NO `broadcast` field: unlike
+ * positioning-snapshot/merchant-screen this feed has no subscriber/broadcast
+ * model at all, so nothing is stubbed there.
+ *
+ * Forwarded BYTE-FOR-BYTE (sendAttestedRaw): the upstream's own embedded
+ * attestation signs the canonical answer bytes, and the gateway signs those
+ * SAME bytes into X-BYTE-Attestation — the paid response carries both the
+ * feed's verdict-equivalent receipt and the gateway's transport receipt over
+ * identical bytes. handle()'s own fail-closed errors (400 unknown path, 503
+ * unreadable observation store) are forwarded as upstream 4xx/5xx below.
+ */
+app.post("/feeds/cctp-attestation-latency", async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const upstream = await fetch(`${config.cctpAttestationLatencyUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      // Bounded — a hung upstream must not hang the paying agent. Aborting
+      // throws into the catch below (502, settlement cancelled): FAIL CLOSED.
+      signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
+    });
+    const text = await upstream.text();
+    if (upstream.ok) {
+      await sendAttestedRaw(res, text);
+    } else {
+      // Do NOT forward the upstream's raw body/headers — it can carry the upstream
+      // host/IP, stack, or internal error text (R4 leak class). Log raw server-side;
+      // return a generic body. Preserve a 4xx (caller's fault) but collapse 5xx→502.
+      console.error(`[x402-gateway] upstream non-ok ${upstream.status}:`, String(text).slice(0, 500));
+      res.status(upstream.status >= 500 ? 502 : upstream.status).json({ error: "upstream error", detail: safeUpstreamDetail(text) });
+    }
+  } catch (err: any) {
+    logProxyFailure("cctp-attestation-latency", err);
+    res.status(502).json({ error: "cctp-attestation-latency proxy failed", detail: proxyFailureDetail(err) });
   }
 });
 

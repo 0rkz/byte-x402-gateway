@@ -39,7 +39,7 @@ import { config, feedRegistry, networkInfo } from "./config.js";
 // buildOpenApiDoc()'s explicit `feed("liquidation-stream")` lookup throws
 // (feedRegistry has no entry for it), 500ing the free /openapi.json route —
 // caught by gate-engagement-check.mjs's free-route-reachable assertion.
-const POST_ORACLE_IDS = new Set(["address-reputation", "pkg-verdict", "sanctions-screen", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel", "merchant-screen"]);
+const POST_ORACLE_IDS = new Set(["address-reputation", "pkg-verdict", "sanctions-screen", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel", "merchant-screen", "cctp-attestation-latency"]);
 
 /** Per-oracle request-body schema, keyed by feed id. Each oracle takes a
  *  different question/claim/citation field plus optional on-chain delivery
@@ -269,6 +269,20 @@ export const ORACLE_REQUEST_SCHEMAS: Record<string, Record<string, unknown>> = {
     },
     required: ["token"],
   },
+  "cctp-attestation-latency": {
+    type: "object",
+    properties: {
+      chain: {
+        type: "string",
+        description: "Optional. Narrow to one source chain (e.g. \"base\", \"arbitrum\", \"optimism\"). Omit for every configured chain.",
+      },
+      path: {
+        type: "string",
+        enum: ["fast", "standard"],
+        description: "Optional. CCTP v2 settlement path. Fast and Standard are never blended — omitting this returns both as separate distributions; an unrecognized value is a 400, not a silent fallback.",
+      },
+    },
+  },
 };
 
 /** Per-oracle EXAMPLE request body — a concrete, schema-valid payload an agent can
@@ -291,6 +305,7 @@ export const ORACLE_REQUEST_EXAMPLES: Record<string, Record<string, unknown>> = 
   "sanctions-screen": { name: "Lazarus Group" },
   "liquidation-stream": { asset: "BTC" },
   "positioning-snapshot": { assets: ["BTC", "ETH"] },
+  "cctp-attestation-latency": { chain: "base", path: "fast" },
 };
 
 /** Per-oracle EXAMPLE response excerpt → the Bazaar declaration's `output.example`
@@ -397,6 +412,41 @@ export const ORACLE_RESPONSE_EXAMPLES: Record<string, Record<string, unknown>> =
       disclaimer:
         "The receipt proves these exact bytes came from this publisher; it does NOT guarantee the " +
         "verdict is correct. AI-generated advisory analysis — verify independently before acting.",
+    },
+    attestation: {
+      payloadHash: "0x…",
+      signer: "0x…",
+      signature: "0x…",
+      domain: { name: "BYTE Library", version: "1", chainId: 421614 },
+    },
+  },
+  "cctp-attestation-latency": {
+    _note:
+      "Excerpt of a real answer (live service, 2026-08-25); hash/signature elided, other buckets " +
+      "trimmed. Every figure is a BOUNDED observation (burn -> first poll seeing complete), never " +
+      "an exact measurement; percentiles are withheld below an 8-measured-sample floor. Fast and " +
+      "Standard are separate settlement paths and are never blended into one percentile. The " +
+      "embedded EIP-712 receipt (domain chainId 421614 = Arbitrum Sepolia, a frozen signing " +
+      "namespace, not a settlement rail) proves who signed these exact bytes — not that the " +
+      "measured latency will hold for your own transfer.",
+    answer: {
+      query: { chain: "base", path: "fast" },
+      distributions: {
+        "base/fast": {
+          samples: 27715,
+          measured_samples: 37,
+          min_s: -1,
+          max_s: 7999,
+          p50_s: 1753,
+          p95_s: 7265,
+          p99_s: 7583,
+          percentiles_reported: true,
+          percentiles_withheld_because: null,
+        },
+      },
+      observation_count: 27715,
+      coverage: { status: "observed" },
+      ruleset: "cctp-lat-v1",
     },
     attestation: {
       payloadHash: "0x…",
@@ -1308,6 +1358,61 @@ const uscStatuteResponseSchema = syncResponseWith(uscStatuteAnswerSchema, {
     "usc-statute carries NO embedded attestation — its provenance receipt is the gateway X-BYTE-Attestation response header. `note` appears on degraded/upstream-error paths.",
 });
 
+// cctp-attestation-latency — data-feeds/cctp-attestation-latency/resolvers.py
+// resolve() answer dict, wrapped by http_api.py's POST /query. Distinct from
+// every other oracle here: it has NO subscriber/broadcast model at all (not
+// publisher-indexer-backed, unlike positioning-snapshot; no on-chain escrow
+// path to stub, unlike merchant-screen/pkg-verdict/sanctions-screen). Its
+// paid 200 body is {answer, attestation?} — never a `broadcast` field — so
+// this does NOT go through syncResponseWith (which always adds one).
+const cctpAttestationLatencyAnswerSchema = {
+  type: "object",
+  properties: {
+    query: {
+      type: "object",
+      properties: {
+        chain: { type: ["string", "null"] },
+        path: { type: ["string", "null"] },
+      },
+    },
+    distributions: {
+      type: "object",
+      description:
+        "Keyed \"<chain>/<path>\" (e.g. \"base/fast\"), never merged — Fast and Standard are " +
+        "separate settlement paths and are never blended into one percentile. Each bucket: " +
+        "samples (total), measured_samples (caught in flight — the only population percentiles " +
+        "are computed over), min_s/max_s (bounds over ALL samples), p50_s/p95_s/p99_s (null " +
+        "below the measured-sample floor), percentiles_reported, percentiles_withheld_because, " +
+        "max_bound_width_s, first_poll_already_complete, detail.",
+    },
+    observation_count: { type: "integer", description: "Rows in scope after chain/path filtering." },
+    unclassified_excluded: { type: "integer", description: "Samples whose settlement path could not be classified — excluded, never bucketed." },
+    unclassified_excluded_scope: { type: "string" },
+    coverage: {
+      type: "object",
+      properties: {
+        status: { type: "string", enum: ["observed", "no_data"], description: "no_data means unknown, NEVER a claim of zero or fast latency." },
+        detail: { type: "string" },
+      },
+    },
+    ruleset: { const: "cctp-lat-v1" },
+    readiness: {
+      type: "object",
+      description: "Registration-readiness metadata (feed_ready/coverage_claim/scope_claim) — not a data field.",
+    },
+  },
+  required: ["query", "distributions", "observation_count", "coverage", "ruleset"],
+};
+
+const cctpAttestationLatencyResponseSchema = {
+  type: "object",
+  properties: {
+    answer: cctpAttestationLatencyAnswerSchema,
+    attestation: payloadAttestationSchema,
+  },
+  required: ["answer"],
+};
+
 /** Per-feed typed response schema for the generic POST oracles — fills the
  *  previously-untyped shared `answer`. Feeds not listed fall back to the generic
  *  syncOracleResponseSchema. */
@@ -1317,6 +1422,7 @@ const ORACLE_RESPONSE_SCHEMAS: Record<string, object> = {
   "evidence-pack": evidencePackResponseSchema,
   "usc-statute": uscStatuteResponseSchema,
   "merchant-screen": merchantScreenResponseSchema,
+  "cctp-attestation-latency": cctpAttestationLatencyResponseSchema,
 };
 
 /** Build the POST operation for a request-response oracle feed. */

@@ -180,6 +180,14 @@ export const config = {
    * default).
    */
   runtimeEolLiveUrl: process.env.RUNTIME_EOL_LIVE_URL || "",
+  /**
+   * cctp-attestation-latency oracle URL — measured Circle CCTP v2 attestation
+   * latency (Fast vs Standard, never blended), first-party polling of real
+   * burns. Runs on the same host (byte-cctp-feed.service, port 8097); NOT
+   * exposed via cloudflared — this paywalled gateway route is its only public
+   * surface. Founder-approved 2026-08-25 (live at $0.01/call, 10000 atomic).
+   */
+  cctpAttestationLatencyUrl: process.env.CCTP_ATTESTATION_LATENCY_URL || "http://127.0.0.1:8097",
 };
 
 /**
@@ -524,6 +532,22 @@ export const feedRegistry: FeedMetadata[] = [
   // positioning-snapshot: per-KB priced on expectedSizeBytes=7480 (~$0.037) — market data.
   bespokeFeed("positioning-snapshot", "Positioning Snapshot Oracle", "Cross-venue perp positioning (funding + open interest) from Hyperliquid, dYdX v4, Aevo; raw fields, abstains honestly where a venue lacks data.", "on-demand", 7480, "financial"),
   // agent-compute, agent-memory, agent-tools (Agent-Infrastructure Index) delisted 2026-07-03 (concentration cut)
+  // cctp-attestation-latency — wired live 2026-08-25 (founder-approved,
+  // AskUserQuestion in-session). Flat $0.01/call (10000 atomic) — a
+  // low-baseline data oracle, not a decision-oracle (no ALLOW/WARN/BLOCK
+  // verdict), so it sits at T4 rather than the $0.10 decision tier. The
+  // upstream (byte-cctp-feed.service, port 8097) went READY the same session
+  // — collect.py's byte-cctp-collect.timer has been recording real classified
+  // observations (77k+) since 2026-08-01.
+  customPricedFeed(
+    "cctp-attestation-latency",
+    "CCTP Attestation Latency Oracle",
+    "Measured Circle CCTP v2 attestation latency, reported as separate Fast and Standard distributions — never blended, since the two settlement paths differ by roughly two orders of magnitude (~8s vs ~15-19min) and a single percentile would describe neither. Built from first-party polling of real burns on Base, Arbitrum, and Optimism: every figure is a BOUNDED observation (burn -> first poll that saw the attestation complete), never an exact measurement, and the bound width ships alongside every distribution. Percentiles are withheld below an 8-measured-sample floor per (chain, path) bucket — a p95 over a handful of samples is arithmetic, not evidence. Unclassifiable samples are excluded, never bucketed; empty is reported as no_data, never as a low latency. The embedded EIP-712 PayloadAttestation proves which key signed these exact answer bytes — recompute keccak256(answer) and recover the signer before acting — never a claim that the measured latency will hold for your own transfer.",
+    "on-demand",
+    2000,
+    "general",
+    "10000",
+  ),
 ];
 
 /** Build a bespoke (upstream-API-backed) feed entry. */
