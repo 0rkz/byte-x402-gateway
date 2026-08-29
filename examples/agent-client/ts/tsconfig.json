@@ -11,5 +11,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["pay-and-fetch.ts"]
+  "include": ["pay-and-fetch.ts", "pay-and-post.ts"]
 }

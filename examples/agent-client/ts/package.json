@@ -6,6 +6,7 @@
   "description": "Agent-pays demo: GET a BYTE x402 feed and auto-pay USDC on Base.",
   "scripts": {
     "start": "tsx pay-and-fetch.ts",
+    "post": "tsx pay-and-post.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
