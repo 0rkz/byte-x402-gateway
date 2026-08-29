@@ -8,3 +8,8 @@ dist/
 .env.cdp-settlement*
 # x402-list.com domain-proof token (host-specific, expiring; served by /.well-known/x402list.txt)
 deploy/base/x402list.txt
+
+# Build-artifact backups (e.g. dist.pre-fixa-2026-07-28.CONTAINS-P1-BUG.bak/).
+# The existing "dist/" rule does not cover these; this repo is PUBLIC and they are
+# known-buggy compiled output with no reason to ship.
+dist.*.bak/
