@@ -30,6 +30,7 @@ import {
   attestationDomain,
 } from "./lib/attestation.js";
 import { logDelivery } from "./lib/delivery-log.js";
+import { emitFromSettleContext, warnIfHmacSecretMissing } from "./lib/receipt-emitter.js";
 
 // Solana support — conditionally loaded at startup
 let ExactSvmScheme: any = null;
@@ -690,6 +691,21 @@ async function setupPaymentMiddleware(): Promise<boolean> {
     const facilitator = new HTTPFacilitatorClient(facilitatorConfig);
     const server = new x402ResourceServer(facilitator)
       .register(config.network, new ExactEvmScheme());
+
+    // Plan-1 Week-2 "receipts on every paid call" — manual onAfterSettle hook
+    // (NOT gated by declaredExtensions, verified @x402/core server/index.mjs
+    // getLabeledHooks, ~:1176-1205: manual hooks run first, unconditionally).
+    // Fire-and-forget: the hook itself is awaited pre-flush by @x402/core, so
+    // `void`-ing the call here is required — awaiting it would delay every
+    // settled response by the emitter's own retry/backoff latency. Entirely
+    // throw-free (see receipt-emitter.ts's own outer try/catch); one-time
+    // startup warning if GATEWAY_HMAC_SECRET is unset (fail-quiet thereafter —
+    // identical behavior to before this feature existed). Rebuilt fresh on
+    // every setupPaymentMiddleware() attempt, same as the rest of `server`.
+    warnIfHmacSecretMissing();
+    server.onAfterSettle(async (ctx) => {
+      void emitFromSettleContext(ctx, { regimeSignalUrl: config.regimeSignalUrl });
+    });
 
     // PROD-15: copy each route's declared serviceName/tags onto the 402's
     // resource object (must be registered before the middleware is built; the

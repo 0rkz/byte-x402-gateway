@@ -1,0 +1,66 @@
+[
+  {
+    "name": "key order: unsorted input keys must produce lexicographically sorted canonical output",
+    "input": {
+      "b": 1,
+      "a": 2,
+      "m": 3
+    },
+    "canonical_json": "{\"a\":2,\"b\":1,\"m\":3}",
+    "hash": "0x39f0aa93b304fe15f494e306323eab2daf55a86b050457f8b3a9a1404ed8d918"
+  },
+  {
+    "name": "nested object: key sorting recurses into nested objects, not just the top level",
+    "input": {
+      "z": {
+        "d": 1,
+        "c": 2
+      },
+      "a": 1
+    },
+    "canonical_json": "{\"a\":1,\"z\":{\"c\":2,\"d\":1}}",
+    "hash": "0x0970dda432cfb516c81578d73364c25ec3736208b8f736b08cd0f7f226fe3689"
+  },
+  {
+    "name": "number formatting: no trailing zeros, no forced decimal point, negative zero normalizes to plain 0",
+    "input": {
+      "n1": 1,
+      "n2": 1.5,
+      "n3": 0,
+      "n4": 100000
+    },
+    "canonical_json": "{\"n1\":1,\"n2\":1.5,\"n3\":0,\"n4\":100000}",
+    "hash": "0x3f98d0cdb52686f4351295f20b82beb81bb90e9300192b7ded4c860faeb1bdcc"
+  },
+  {
+    "name": "array order: array element order is preserved as meaningful data, unlike object keys which are sorted",
+    "input": {
+      "arr": [
+        3,
+        1,
+        2
+      ],
+      "tag": "x"
+    },
+    "canonical_json": "{\"arr\":[3,1,2],\"tag\":\"x\"}",
+    "hash": "0x43798f5f3e3d82772acead37bc05e4bfd25c10d01d73015c400cad4f36f8f062"
+  },
+  {
+    "name": "mixed: nested objects inside an array, sorted keys at every level, deterministic regardless of input key order",
+    "input": {
+      "list": [
+        {
+          "y": 2,
+          "x": 1
+        },
+        {
+          "b": 2,
+          "a": 1
+        }
+      ],
+      "id": "z1"
+    },
+    "canonical_json": "{\"id\":\"z1\",\"list\":[{\"x\":1,\"y\":2},{\"a\":1,\"b\":2}]}",
+    "hash": "0x199c6608721c9775c6ba96770f4517f221c54ae53bd5c897ef4cd8580142b33e"
+  }
+]

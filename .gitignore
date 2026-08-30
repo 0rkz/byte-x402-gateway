@@ -6,6 +6,9 @@ dist/
 *.log
 .env.attestation*
 .env.cdp-settlement*
+# GATEWAY_HMAC_SECRET for the receipts payment-context wire contract (Plan-1
+# Week-2) — never tracked; the repo is PUBLIC. Founder-provisioned only.
+.env.receipts*
 # x402-list.com domain-proof token (host-specific, expiring; served by /.well-known/x402list.txt)
 deploy/base/x402list.txt
 

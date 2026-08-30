@@ -1,0 +1,27 @@
+[
+  {
+    "secret": "unit-test-secret",
+    "raw": "{\"a\":1,\"b\":\"two\"}",
+    "hmac_hex": "1d4eba06756924f09cba8ebd58d65ba9ec56c4660f568fc77627a2aa5c6dd8a1"
+  },
+  {
+    "secret": "another-secret-value",
+    "raw": "{}",
+    "hmac_hex": "9287d2f9cceae9489fcf885cfb8661634d2ba1b9c3de1088af93c8b9bd1ff19d"
+  },
+  {
+    "secret": "unicode-secret",
+    "raw": "{\"note\":\"unicode: café ☃ 😀\"}",
+    "hmac_hex": "53349251f9ab2d1c914267de737864efd17120465a37615778e258f404a03baa"
+  },
+  {
+    "secret": "gateway-receipts-shared-secret-fixture",
+    "raw": "{\"payer\":\"0x00000000000000000000000000000000000000A1\",\"payment_nonce\":\"0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"settlement_tx\":\"0xabababababababababababababababababababababababababababababababab\",\"resource\":\"regime-signal:BTC:4\",\"issued_at\":1800000000,\"expires_at\":1800000600,\"response_hash\":\"0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\"}",
+    "hmac_hex": "7a652bad01a3df94479a5dc5a2158652235609626ebd7b81ab78b10b346f3949"
+  },
+  {
+    "secret": "gateway-receipts-shared-secret-fixture",
+    "raw": "{\"payer\":\"0x00000000000000000000000000000000000000B2\",\"payment_nonce\":\"0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef\",\"settlement_tx\":null,\"resource\":\"regime-signal:ETH:24\",\"issued_at\":1800001000,\"expires_at\":1800001600}",
+    "hmac_hex": "91045ff1415be5a6bd2717f3c43985b19bd57d598d4d51b7a05988ba41275068"
+  }
+]

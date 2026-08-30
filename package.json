@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "gate-check": "node scripts/gate-engagement-check.mjs",
-    "preship": "npm run build && node scripts/gate-engagement-check.mjs"
+    "preship": "npm run build && node scripts/gate-engagement-check.mjs",
+    "test": "tsx --test test/unit/*.test.ts"
   },
   "dependencies": {
     "@coinbase/x402": "^2.1.0",
@@ -26,7 +27,7 @@
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^22.7.0",
-    "tsx": "^4.19.0",
+    "tsx": "4.23.12",
     "typescript": "^5.6.0"
   }
 }
