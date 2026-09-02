@@ -199,12 +199,23 @@ export const config = {
    * (Plan 1, @bytedev/receipts). Every paid call is bound to a signed
    * EIP-712 DeliveryReceipt anchored on Base via EAS; scoring is a
    * published, deterministic rule against Chainlink rounds anyone can
-   * rerun (see the upstream's own GET /methodology). Runs on the same
-   * host (byte-regime-signal.service, port 8098; NOT installed as of this
-   * wiring — see receipts/systemd/); NOT exposed via cloudflared — this
-   * paywalled gateway route is its only public surface.
+   * rerun (see https://x402.payperbyte.io/methodology). Runs on the same
+   * host: byte-regime-signal.service on 127.0.0.1:**8102**, live since
+   * 2026-08-25 (health path /healthz).
+   *
+   * The upstream is NOT exposed via cloudflared and must never be: its
+   * POST /query has no payment check of its own — the price is enforced
+   * only by the x402 middleware in front of POST /feeds/regime-signal —
+   * so a tunnel hostname pointed at this port would make the paid signal
+   * free. The gateway's own path-scoped GET routes (/proof/:id,
+   * /methodology, /track-record) are the sanctioned public surface.
+   *
+   * The fallback below was 8098 until 2026-09-01. That is byte-merchant-
+   * screen, a DIFFERENT service — so an unset REGIME_SIGNAL_URL silently
+   * proxied a paid feed to the wrong upstream. Kept in lockstep with the
+   * pin in deploy/base/.env.base-mainnet.
    */
-  regimeSignalUrl: process.env.REGIME_SIGNAL_URL || "http://127.0.0.1:8098",
+  regimeSignalUrl: process.env.REGIME_SIGNAL_URL || "http://127.0.0.1:8102",
 };
 
 /**
@@ -567,15 +578,17 @@ export const feedRegistry: FeedMetadata[] = [
   ),
   // regime-signal — Plan 1 (receipt-anchored regime endpoint, @bytedev/receipts).
   // $0.02/call (20000 atomic) per the plan's listed-peer-comparable pricing
-  // (peers cluster $0.01-0.07). Upstream (byte-regime-signal.service, port
-  // 8098) is NOT installed/running as of this wiring — this route will 502
-  // (upstream unreachable, settlement cancelled, fail-closed) until the
-  // service is deployed; wiring lands ahead of deploy so the two are
-  // reviewable separately.
+  // (peers cluster $0.01-0.07). Upstream is byte-regime-signal.service on
+  // 127.0.0.1:**8102**, LIVE since 2026-08-25 (health path /healthz, not
+  // /health). NOT 8098 — that port is byte-merchant-screen and always has
+  // been; the 8098 that used to sit in this comment was the pre-deploy plan.
+  // The live bind comes from REGIME_SIGNAL_URL, pinned in .env.base-mainnet;
+  // regimeSignalUrl's own fallback above still reads 8098, so an unset env
+  // would silently proxy this feed to merchant-screen (see OUTSTANDING note).
   customPricedFeed(
     "regime-signal",
     "Receipt-Anchored Regime Signal",
-    "BTC/ETH regime classification (trend_up/trend_down/range/high_vol) and a realized-vol above/below call, horizon 4h or 24h. Every response is bound to a signed EIP-712 DeliveryReceipt anchored on Base via EAS; the scoring rule is published and deterministic against public Chainlink rounds, independently recomputable by anyone — see the upstream's own GET /methodology and GET /track-record. v1-baseline model: a deterministic persistence/threshold rule, not a trained model — see /methodology for the exact published formula.",
+    "BTC/ETH regime classification (trend_up/trend_down/range/high_vol) and a realized-vol above/below call, horizon 4h or 24h. Every response is bound to a signed EIP-712 DeliveryReceipt anchored on Base via EAS; the scoring rule is published and deterministic against public Chainlink rounds, independently recomputable by anyone — see https://x402.payperbyte.io/methodology and https://x402.payperbyte.io/track-record — v1-baseline model: a deterministic persistence/threshold rule, not a trained model — see https://x402.payperbyte.io/methodology for the exact published formula.",
     "on-demand",
     900,
     "financial",

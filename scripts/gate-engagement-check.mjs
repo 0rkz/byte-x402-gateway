@@ -46,7 +46,7 @@
  *   node scripts/gate-engagement-check.mjs --json      # machine-readable summary
  */
 
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import net from "node:net";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -63,6 +63,22 @@ const DENYLIST = ["crypto-top100", "btc-metrics", "token-safety", "fact-oracle",
 
 // Free/meta routes the gate must NOT block (over-blocking is its own failure).
 const FREE_ROUTES = ["/health", "/feeds", "/openapi.json", "/.well-known/x402.json"];
+
+// Free routes that PROXY to the receipts upstream (:8102). Deliberately NOT in
+// FREE_ROUTES: those are asserted ==200, and these depend on a second service
+// being up, so listing them there would make preship fail whenever the upstream
+// is merely stopped. What the gate must prove is narrower and never flaky —
+// that these are not payment-gated, not 404, and not swallowed by the catch-all.
+// 200 (upstream up) and 502 (upstream down) are both PASSES; 402/403 means the
+// payment gate is over-blocking a free route, and 404/405 means the route was
+// dropped or shadowed. Both are the failures worth blocking a deploy for.
+const PROXIED_FREE_ROUTES = [
+  "/methodology",
+  "/track-record",
+  // A well-formed id that will not resolve: proves routing + the 0x+64-hex
+  // validator, without depending on any receipt existing in the live store.
+  "/proof/0x0000000000000000000000000000000000000000000000000000000000000000",
+];
 
 const args = process.argv.slice(2);
 const JSON_OUT = args.includes("--json");
@@ -107,7 +123,7 @@ async function waitForHealth(base, ms = 20000) {
 /** One unpaid probe with a small retry. Returns { status, hasReceipt, bodySample }
  *  or { netError } after retries — callers treat netError as INFRA (exit 2), never
  *  a leak, so a flaky CI runner / remote hiccup can't masquerade as a gate failure. */
-async function probe(base, method, p, withBody = false) {
+async function probe(base, method, p, withBody = false, timeoutMs = 8000) {
   const init = { method, redirect: "manual" };
   if (withBody || method === "POST") {
     init.headers = { "content-type": "application/json" };
@@ -116,7 +132,7 @@ async function probe(base, method, p, withBody = false) {
   let lastErr;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const r = await fetch(`${base}${p}`, { ...init, signal: AbortSignal.timeout(8000) });
+      const r = await fetch(`${base}${p}`, { ...init, signal: AbortSignal.timeout(timeoutMs) });
       const hasReceipt = r.headers.has("x-byte-attestation");
       let bodySample = "";
       try {
@@ -207,13 +223,100 @@ function catalogSlugs() {
   }
 }
 
+/**
+ * "dist/ matches HEAD" — the assertion that would have caught two incidents on
+ * 2026-09-01. A restart deploys whatever is in dist/, from any cause, so before
+ * a deploy we prove dist was built from COMMITTED source.
+ *
+ * TWO checks, because they catch different failures: `git diff` sees MODIFIED
+ * tracked files but is BLIND to UNTRACKED ones — and a brand-new source file
+ * compiles into dist/ while diff stays silent. Commit the modification, forget
+ * the new file, and a diff-only assertion passes green while dist ships
+ * uncommitted code. Advisory here (warn, not fail) ON PURPOSE: this gate also
+ * runs against --url and against dev checkouts, where a dirty tree is normal,
+ * and a check that hard-fails on the normal case is one people learn to skip.
+ * deploy-gateway.sh enforces the same two checks fail-closed at the TOP of that
+ * script, before `npm run preship` — since preship builds, a check placed after
+ * it aborts the restart but leaves a poisoned dist/ on disk for Restart=always
+ * to deploy later.
+ */
+function checkDistMatchesHead() {
+  if (LIVE_URL) return; // probing a remote host — the local tree says nothing about it
+  try {
+    const modified = execSync("git diff --name-only HEAD -- src/ scripts/", {
+      cwd: GATEWAY_DIR, encoding: "utf8",
+    }).trim();
+    const untracked = execSync("git ls-files --others --exclude-standard -- src/ scripts/", {
+      cwd: GATEWAY_DIR, encoding: "utf8",
+    }).trim();
+    if (!modified && !untracked) {
+      pass("dist/ provenance: src/ and scripts/ match HEAD (no uncommitted code can reach dist/)");
+      return;
+    }
+    if (modified) warn(`uncommitted MODIFIED source — a build here puts it in dist/, and any restart deploys it: ${modified.split("\n").join(", ")}`);
+    if (untracked) warn(`uncommitted UNTRACKED source — compiles into dist/ invisibly to \`git diff\`: ${untracked.split("\n").join(", ")}`);
+  } catch (e) {
+    warn(`dist/ provenance check could not run (${e.message.split("\n")[0]})`);
+  }
+}
+
 async function runChecks(base) {
+  checkDistMatchesHead();
+
   // ── 1. free/meta routes must be reachable (gate must not over-block) ──
   for (const p of FREE_ROUTES) {
     const res = await probe(base, "GET", p);
     if (res.netError) infra(`free route GET ${p}: ${res.netError}`);
     else if (res.status === 200) pass(`free route reachable: GET ${p} → 200`);
     else fail(`free route GET ${p} returned ${res.status} (gate over-blocking a meta route?)`);
+  }
+
+  // ── 1b. proxied free routes: never gated, never missing (see PROXIED_FREE_ROUTES) ──
+  // Asserts on the BODY, not just the status. Status alone cannot tell a route
+  // that ran and honestly missed from a route that is GONE — the catch-all
+  // answers 404 too, so a status-only check green-lights the exact regression
+  // it claims to catch. The upstream's miss is {"detail":"receipt not found"};
+  // the catch-all's is {"detail":"No route at ..."}.
+  // Timeout is generous because /track-record recomputes upstream (5-24s
+  // measured); the old 8s budget turned a slow-but-working route into "infra".
+  for (const p of PROXIED_FREE_ROUTES) {
+    const res = await probe(base, "GET", p, false, 35_000);
+    const body = String(res.bodySample ?? res.body ?? "");
+    const isProof = p.startsWith("/proof/");
+    if (res.netError) {
+      infra(`proxied free route GET ${p}: ${res.netError}`);
+    } else if (res.status === 402 || res.status === 403) {
+      fail(`proxied free route GET ${p} returned ${res.status} — payment gate is over-blocking a FREE route`);
+    } else if (res.status === 404) {
+      // Only an UPSTREAM 404 is acceptable, and only on the proof probe.
+      if (isProof && /receipt not found/i.test(body)) {
+        pass(`proxied free route reachable: GET ${p} → 404 (upstream: receipt not found)`);
+      } else {
+        fail(`proxied free route GET ${p} returned an unexpected 404 — either the route is missing/shadowed by the catch-all, or REGIME_SIGNAL_URL points at something that is not the receipts service (body: ${body.slice(0, 120)})`);
+      }
+    } else if (res.status === 502) {
+      // Never a silent pass: a 502 on a path the public manifests now name is
+      // either a down upstream or a misconfigured REGIME_SIGNAL_URL, and both
+      // must be visible in the output rather than laundered into a green run.
+      warn(`proxied free route GET ${p} returned 502 — upstream down or misconfigured. NOT a deploy-safe state for a URL the catalog advertises.`);
+    } else if (res.status === 200) {
+      pass(`proxied free route reachable: GET ${p} → 200`);
+    } else {
+      fail(`proxied free route GET ${p} returned ${res.status} (expected 200, an honest upstream 404, or a flagged 502)`);
+    }
+  }
+
+  // The validator is part of the contract this gate protects: a malformed id
+  // must be rejected AT THE GATEWAY, never concatenated into an upstream path.
+  {
+    const res = await probe(base, "GET", "/proof/..%2f..%2fquery", false, 15_000);
+    const body = String(res.bodySample ?? res.body ?? "");
+    if (res.netError) infra(`receipt-id validator probe: ${res.netError}`);
+    else if (res.status === 400 && /invalid_receipt_id/.test(body)) {
+      pass("receipt-id validator rejects a traversal-shaped id → 400 invalid_receipt_id");
+    } else {
+      fail(`receipt-id validator did NOT reject a traversal-shaped id: got ${res.status} (body: ${body.slice(0, 120)}) — a malformed id must never reach the upstream`);
+    }
   }
 
   // ── 2. every advertised payable op must FAIL CLOSED unpaid — canonical + variants ──
@@ -299,6 +402,11 @@ async function main() {
         PORT: String(port),
         // UNREACHABLE facilitator → worst-case boot race → paid routes MUST 503.
         FACILITATOR_URL: "http://127.0.0.1:1",
+        // Pin the receipts upstream the same way. Without this the spawned
+        // gateway inherits config.ts's fallback, and step 1b below probes
+        // whatever happens to be on that port instead of the real upstream —
+        // which is how this check false-FAILED with "leak" on a clean build.
+        REGIME_SIGNAL_URL: process.env.REGIME_SIGNAL_URL || "http://127.0.0.1:8102",
         // No attestation key → no receipt header could ride any response.
         GATEWAY_ATTESTATION_KEY: "",
       },

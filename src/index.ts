@@ -19,6 +19,7 @@ import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient, type FacilitatorConfig } from "@x402/core/server";
 import type { ResourceServerExtension } from "@x402/core/types";
 import { config, feedRegistry, DISCLAIMER_TEXT, networkInfo, FEED_LIVE_URL, FEED_STALE_AFTER_S } from "./lib/config.js";
+import { normalizeReceiptId, isValidReceiptId, mapUpstreamStatus } from "./lib/receipt-id.js";
 import { buildOpenApiDoc, ORACLE_REQUEST_SCHEMAS, ORACLE_REQUEST_EXAMPLES, ORACLE_RESPONSE_EXAMPLES } from "./lib/openapi.js";
 import { fetchDefiYields } from "./feeds/defi.js";
 import { fetchFeedPayload } from "./feeds/generic.js";
@@ -110,6 +111,19 @@ const generalLimiter = rateLimit({
 // are the cheapest DoS/scrape target. Still generous relative to how often
 // any real crawler or agent re-fetches a catalog.
 const discoveryLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: clientIpKey,
+});
+
+// Receipt-transparency routes get their OWN bucket rather than sharing the
+// discovery one. A buyer polling /proof/{id} while waiting for their receipt to
+// be minted would otherwise burn the same 60/min counter as /feeds and the
+// .well-known manifests — i.e. rate-limit itself out of the discovery surface
+// it needs for its next paid purchase. Same budget, separate store.
+const receiptsLimiter = rateLimit({
   windowMs: 60_000,
   limit: 60,
   standardHeaders: true,
@@ -1558,6 +1572,268 @@ app.get("/health", (_req, res) => {
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
   });
+});
+
+// ── Receipt transparency (free, unauthenticated) ──────────────────────────
+//
+// Plan 1 (@bytedev/receipts) binds a signed, EAS-anchored DeliveryReceipt to
+// every paid regime-signal call — but the buyer's own response carries
+// `receipt: null` BY DESIGN: x402 settles AFTER the handler returns, so the
+// settlement tx does not exist yet at response-assembly time and the emitter
+// mints out of band ~7ms later. The only lookup is the upstream's GET
+// /proof/:id, and until now that route — along with /methodology and
+// /track-record — existed ONLY on loopback. Net effect: a paying customer could
+// derive their receipt id correctly and still have nowhere to fetch it, while
+// the public catalog, /openapi.json and /.well-known/x402.json all advertised
+// "see the upstream's own GET /methodology and GET /track-record" — two live
+// 404s shipped to every crawling agent. These three routes close both gaps.
+//
+// 🔴 WHY THIS IS A GATEWAY ROUTE AND NOT A CLOUDFLARED INGRESS ENTRY.
+// The obvious fix — pointing a tunnel hostname at the upstream port — would
+// make the $0.02 signal FREE. The upstream's POST /query has NO payment check
+// of its own (it validates asset/horizon and serves the precomputed cache);
+// the price is enforced ENTIRELY by the x402 middleware in front of
+// POST /feeds/regime-signal here, which then fetches the upstream server-side.
+// Publishing the origin port publishes /query, and the paywall is bypassable.
+// For exactly that reason these are a PATH-SCOPED ALLOWLIST and must stay one:
+// a catch-all passthrough proxy would re-open the same bypass through the front
+// door. Add a path here only after asking what else that port serves.
+//
+// Free by construction: paymentRoutes is built only from `POST ${feed.endpoint}`
+// for POST_ORACLES members, so a GET registered here is never payment-gated —
+// which is what we want. Charging for a receipt lookup would be absurd, and the
+// HEAD guard above only 405s paid routes, so HEAD on these is harmlessly free.
+// receiptsLimiter gives them their own 60/min bucket, so receipt polling cannot
+// exhaust the discovery surface's budget (they are separate stores).
+
+/**
+ * A receipt id is `keccak256(0x00 || canonical_json)` — 0x + 64 hex, always.
+ * Validated HERE rather than passed through, because the id is interpolated
+ * into an upstream URL path: a loose value is a traversal primitive (a crafted
+ * `/proof/..%2f..%2fquery` is exactly the free-signal bypass this whole block
+ * exists to prevent). Reject at the edge; never let an unvalidated segment
+ * reach the origin.
+ */
+// Implementation + rationale: src/lib/receipt-id.ts (unit-tested there).
+
+/**
+ * Shared proxy for the three receipt-transparency routes. Mirrors the paid
+ * regime-signal handler's discipline: bounded deadline, never forward the
+ * upstream's raw body or headers (R4 leak class), 5xx collapsed to 502.
+ *
+ * One deliberate difference: a 4xx is PRESERVED, not collapsed. "receipt not
+ * found" is the honest answer to an id that was never minted (a call that
+ * legitimately produced no receipt, or a derivation slip) — answering 502 there
+ * would tell a buyer the service is broken when their lookup simply missed.
+ */
+function receiptUpstreamDetail(rawBody: string): string {
+  const candidate = safeUpstreamDetail(rawBody);
+  // safeUpstreamDetail's leak argument was verified against the PYTHON
+  // data-feeds oracles. This upstream is Node, and a Node error string can
+  // carry an absolute path or a host:port. Belt-and-braces for these three
+  // routes only: anything that looks like a filesystem path or a host:port
+  // falls back to the opaque detail rather than reaching a public caller.
+  if (/(^|\s)\/(home|usr|etc|var|root|opt)\//.test(candidate) || /:\d{2,5}\b/.test(candidate)) {
+    return "upstream error";
+  }
+  return candidate;
+}
+
+/**
+ * Gateway-side response cache for the two EXPENSIVE, slow-moving receipt routes.
+ *
+ * A Cache-Control header alone does NOT protect the origin — it instructs
+ * clients and intermediaries, and nothing here guarantees one is in front of
+ * us. /track-record recomputes a score across the receipt set upstream (5-24s
+ * measured) and burns public Base RPC on the SAME quota the hourly refresh job
+ * uses to regenerate the signal the PAID route sells. Left uncached, a free
+ * unauthenticated route is an amplification vector pointed at the revenue path.
+ *
+ * Single-flight is the load-bearing half: without it, N concurrent cold
+ * requests become N concurrent upstream recomputations (a thundering herd is
+ * exactly what a crawler produces). Callers that arrive during an in-flight
+ * fetch await the SAME promise.
+ *
+ * /proof is deliberately NOT cached — its `anchor.status` transitions
+ * (not_yet_anchored -> pending_anchor -> anchored) are the whole point, and a
+ * stale one would tell a buyer their receipt is unanchored when it is not.
+ */
+const RECEIPT_CACHE_TTL_MS = 300_000;
+
+interface CachedUpstream { body: string; contentType: string; expiresAt: number }
+const receiptCache = new Map<string, CachedUpstream>();
+const receiptInflight = new Map<string, Promise<UpstreamResult>>();
+
+/**
+ * MED-1: cap what we are willing to hold for the TTL. An upstream that returns
+ * a pathological body would otherwise be pinned in gateway memory for 300s.
+ */
+const MAX_CACHEABLE_UPSTREAM_BYTES = 1_048_576;
+
+/**
+ * One upstream GET, shared by every caller waiting on the same path.
+ *
+ * Returns a DISCRIMINATED result, never bare null. HIGH-2 (FD, 2026-09-01): the
+ * first cut returned null on failure and the caller then re-fetched directly, so
+ * single-flight INVERTED exactly under distress — 20 concurrent clients against a
+ * 500 upstream produced 34 upstream hits instead of 1. That is the condition the
+ * cache exists for, and /track-record shares Base RPC quota with the paid refresh
+ * job. Every caller now answers from THIS result; nobody re-fetches.
+ */
+type UpstreamResult =
+  | { ok: true; body: string; contentType: string; expiresAt: number }
+  | { ok: false; status: number; detail: string };
+
+async function fetchUpstreamForCache(
+  upstreamPath: string,
+  timeoutMs: number,
+  label: string,
+): Promise<UpstreamResult> {
+  try {
+    const upstream = await fetch(`${config.regimeSignalUrl}${upstreamPath}`, {
+      method: "GET",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const text = await upstream.text();
+    if (!upstream.ok) {
+      console.error(`[x402-gateway] upstream non-ok ${upstream.status}: route=${label}`);
+      return { ok: false, status: upstream.status, detail: receiptUpstreamDetail(text) };
+    }
+    const contentType = upstream.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().startsWith("application/json") || text.length === 0) {
+      console.error(`[x402-gateway] upstream 200 with unexpected content-type: route=${label} ct=${contentType} len=${text.length}`);
+      return { ok: false, status: 502, detail: "upstream returned an unexpected response shape" };
+    }
+    if (Buffer.byteLength(text, "utf8") > MAX_CACHEABLE_UPSTREAM_BYTES) {
+      console.error(`[x402-gateway] upstream body too large to cache: route=${label} bytes=${Buffer.byteLength(text, "utf8")}`);
+      return { ok: false, status: 502, detail: "upstream response too large" };
+    }
+    return { ok: true, body: text, contentType: "application/json", expiresAt: Date.now() + RECEIPT_CACHE_TTL_MS };
+  } catch (err: unknown) {
+    logProxyFailure(`route=${label}(cache)`, err);
+    return { ok: false, status: 502, detail: proxyFailureDetail(err, timeoutMs) };
+  }
+}
+
+/**
+ * Set the response's cache policy. Cache-Control is PER-ROUTE, not shared:
+ * /methodology and /track-record are cacheable, /proof is NOT. Its anchor.status
+ * transitions are the whole point, and Cloudflare fronts this host — a public
+ * max-age lets a buyer's own client pin "not yet anchored" for the full TTL while
+ * they poll. no-store forces revalidation; the ETag then makes each poll cost 0
+ * bytes when nothing changed. (Unlike x402list.txt we keep res.send: verified
+ * 2026-09-01 that the 304 only fires on byte-identical bodies, so it can never
+ * serve a stale anchor.status — here the ETag is a win, not the hazard it is on
+ * that route. Do not "fix" this back to res.end.)
+ */
+function setReceiptCachePolicy(res: express.Response, cacheable: boolean): void {
+  res.set("Cache-Control", cacheable ? "public, max-age=300" : "no-store, max-age=0");
+}
+
+async function proxyReceiptRoute(
+  label: string,
+  upstreamPath: string,
+  res: express.Response,
+  timeoutMs: number = UPSTREAM_FETCH_TIMEOUT_MS,
+  cacheable = false,
+): Promise<void> {
+  if (cacheable) {
+    const hit = receiptCache.get(upstreamPath);
+    if (hit && hit.expiresAt > Date.now()) {
+      setReceiptCachePolicy(res, true);
+      res.type(hit.contentType).send(hit.body);
+      return;
+    }
+    let flight = receiptInflight.get(upstreamPath);
+    if (!flight) {
+      flight = fetchUpstreamForCache(upstreamPath, timeoutMs, label).finally(() => {
+        receiptInflight.delete(upstreamPath);
+      });
+      receiptInflight.set(upstreamPath, flight);
+    }
+    const result = await flight;
+    if (result.ok) {
+      receiptCache.set(upstreamPath, result);
+      setReceiptCachePolicy(res, true);
+      res.type(result.contentType).send(result.body);
+      return;
+    }
+    // Answer from THIS result — never re-fetch (HIGH-2). A failure is not cached,
+    // so the next request after the in-flight one clears will try again.
+    const mappedFail = mapUpstreamStatus(result.status);
+    setReceiptCachePolicy(res, false);
+    res.status(mappedFail.status).json({ error: mappedFail.error, detail: result.detail });
+    return;
+  }
+  try {
+    const upstream = await fetch(`${config.regimeSignalUrl}${upstreamPath}`, {
+      method: "GET",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const text = await upstream.text();
+    if (upstream.ok) {
+      // Do not label bytes JSON without checking they are. An empty or
+      // non-JSON upstream 200 forwarded as application/json is a lying 200;
+      // fail closed instead.
+      const ct = upstream.headers.get("content-type") ?? "";
+      if (!ct.toLowerCase().startsWith("application/json") || text.length === 0) {
+        console.error(`[x402-gateway] upstream 200 with unexpected content-type: route=${label} ct=${ct} len=${text.length}`);
+        setReceiptCachePolicy(res, false);
+        res.status(502).json({ error: "upstream error", detail: "upstream returned an unexpected response shape" });
+        return;
+      }
+      setReceiptCachePolicy(res, cacheable);
+      res.type("application/json").send(text);
+      return;
+    }
+    console.error(`[x402-gateway] upstream non-ok ${upstream.status}: route=${label}`);
+    const mapped = mapUpstreamStatus(upstream.status);
+    // no-store on the non-ok branch too, so a 404 "not yet minted" is not
+    // heuristically cached by an intermediary and pinned past the mint.
+    setReceiptCachePolicy(res, false);
+    res.status(mapped.status).json({ error: mapped.error, detail: receiptUpstreamDetail(text) });
+  } catch (err: unknown) {
+    logProxyFailure(`route=${label}`, err);
+    setReceiptCachePolicy(res, false);
+    res.status(502).json({ error: `${label} proxy failed`, detail: proxyFailureDetail(err, timeoutMs) });
+  }
+}
+
+/** Fetch the signed DeliveryReceipt for a paid call, by its derived id. */
+app.get("/proof/:id", receiptsLimiter, async (req, res) => {
+  // Lowercase BEFORE validating and forwarding. The upstream store lookup is
+  // case-sensitive, so a correctly-derived id typed in uppercase would return
+  // an authoritative "receipt not found" for a receipt that exists — the worst
+  // possible answer on this route. The regex still accepts A-F as input
+  // tolerance; only the normalized form ever reaches the origin.
+  const id = normalizeReceiptId(req.params.id);
+  if (!isValidReceiptId(id)) {
+    // no-store here too: this early return never reaches proxyReceiptRoute, and
+    // an intermediary that heuristically caches a 400 would pin a rejection for
+    // an id the caller may simply have mistyped.
+    setReceiptCachePolicy(res, false);
+    res.status(400).json({
+      error: "invalid_receipt_id",
+      detail:
+        "A receipt id is 0x followed by 64 hex characters. You can derive your own " +
+        "from fields you already hold — see https://www.payperbyte.io/docs/receipts",
+    });
+    return;
+  }
+  await proxyReceiptRoute("proof", `/proof/${id}`, res);
+});
+
+/** The published, deterministic scoring + signal rule. */
+app.get("/methodology", receiptsLimiter, async (_req, res) => {
+  await proxyReceiptRoute("methodology", "/methodology", res, UPSTREAM_FETCH_TIMEOUT_MS, true);
+});
+
+/** Scored track record over anchored receipts. Honest about sample size. */
+app.get("/track-record", receiptsLimiter, async (_req, res) => {
+  // SLOW deadline, not the 15s default: the upstream recomputes the score
+  // across the receipt set and has been measured at 5-24s. At 15s this route
+  // would 502 intermittently on a URL the public manifests now name.
+  await proxyReceiptRoute("track-record", "/track-record", res, SLOW_UPSTREAM_FETCH_TIMEOUT_MS, true);
 });
 
 /**
