@@ -1,0 +1,53 @@
+{
+  "capturedAt": "2026-08-21T03:55:08.648Z",
+  "request": {
+    "url": "https://x402.payperbyte.io/feeds/sanctions-screen",
+    "method": "POST",
+    "body": {
+      "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    }
+  },
+  "payer": "0x91B1690b95F4e70c4DAB60f63068E8C34ef9A6Db",
+  "status": 200,
+  "headers": {
+    "access-control-allow-origin": "*",
+    "access-control-expose-headers": "X-BYTE-Attestation, X-BYTE-Disclaimer-Category, PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-PAYMENT-RESPONSE, Content-Length",
+    "alt-svc": "h3=\":443\"; ma=86400",
+    "cf-cache-status": "DYNAMIC",
+    "cf-ray": "a2e6b34d39516085-MIA",
+    "connection": "keep-alive",
+    "content-encoding": "br",
+    "content-type": "application/json; charset=utf-8",
+    "date": "Fri, 21 Aug 2026 03:55:08 GMT",
+    "etag": "W/\"cf0-wBxxJVS6JWah31a4dqRr3SBBVrA\"",
+    "nel": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}",
+    "payment-response": "eyJzdWNjZXNzIjp0cnVlLCJwYXllciI6IjB4OTFCMTY5MGI5NUY0ZTcwYzREQUI2MGY2MzA2OEU4QzM0ZWY5QTZEYiIsInRyYW5zYWN0aW9uIjoiMHgxZTYzYjFjMjllZmY3YWU0OWYzZTNmZjU5YmJkYjI4ZTA3NzBhOWUzMWIxOTAzZGM5OTViOWZjZDEyODA1NjcxIiwibmV0d29yayI6ImVpcDE1NTo4NDUzIn0=",
+    "report-to": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=HNStE2TYuu%2F9MeLUz6uMmDzUjB9JNl4pulkvrIiPwM0u5jhpsSx8i5eFbk5yf6AkiqZ2p0fg9pSvBQ%2BLlGQ1f4wRb4%2FpyxQqIHkkQz0dg13M2Ppb2DK6MBNQNzHcUvzMN3AeUrw%3D\"}]}",
+    "server": "cloudflare",
+    "transfer-encoding": "chunked",
+    "x-byte-attestation": "{\"alg\":\"EIP712-PayloadAttestation\",\"domain\":{\"name\":\"BYTE Library\",\"version\":\"1\",\"chainId\":421614,\"verifyingContract\":\"0x44729bB148F46d8Db509E47b0453edc271e06e95\"},\"publisher\":\"0xB48CCc9e3ab67041e3b5D09700138E45cda6AeA8\",\"payloadHash\":\"0xb14ef4b30838a2964800ace5f02f592834e14c695be5862b54b6ff8d2e1647d3\",\"payloadLength\":3312,\"deadline\":2102644507,\"signature\":\"0x575399d1e3f8fdcfc5586c93be797951a83802b718621aa1e1d938dbf56f443434e1ec4cb18bead30bc4ea2582f587ee1797ea8580334bcd42d682ed5eea6cf11c\"}",
+    "x-byte-disclaimer-category": "legal"
+  },
+  "settle": {
+    "success": true,
+    "payer": "0x91B1690b95F4e70c4DAB60f63068E8C34ef9A6Db",
+    "transaction": "0x1e63b1c29eff7ae49f3e3ff59bbdb28e0770a9e31b1903dc995b9fcd12805671",
+    "network": "eip155:8453"
+  },
+  "attestation": {
+    "alg": "EIP712-PayloadAttestation",
+    "domain": {
+      "name": "BYTE Library",
+      "version": "1",
+      "chainId": 421614,
+      "verifyingContract": "0x44729bB148F46d8Db509E47b0453edc271e06e95"
+    },
+    "publisher": "0xB48CCc9e3ab67041e3b5D09700138E45cda6AeA8",
+    "payloadHash": "0xb14ef4b30838a2964800ace5f02f592834e14c695be5862b54b6ff8d2e1647d3",
+    "payloadLength": 3312,
+    "deadline": 2102644507,
+    "signature": "0x575399d1e3f8fdcfc5586c93be797951a83802b718621aa1e1d938dbf56f443434e1ec4cb18bead30bc4ea2582f587ee1797ea8580334bcd42d682ed5eea6cf11c"
+  },
+  "computedKeccak256": "0xb14ef4b30838a2964800ace5f02f592834e14c695be5862b54b6ff8d2e1647d3",
+  "body": "{\"answer\":{\"v\":\"sanctions-screen/v1\",\"ts\":1787284507,\"query\":{\"address\":\"0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\",\"name\":null,\"chain\":null},\"verdict\":\"ALLOW\",\"score\":100,\"reasons\":[\"no match on the OFAC SDN list (19249 entries; list published 2026-08-20, fetched 2026-08-20T23:42:38Z, sha256 50213298d936901a\\u2026)\",\"no match on the OFAC Consolidated (non-SDN) list (481 entries; list published 2026-08-20, fetched 2026-08-20T23:42:41Z, sha256 5a629469398539ac\\u2026)\"],\"signals\":{\"sdn\":{\"list_available\":true,\"address_hit\":false,\"address_matches\":[],\"name_exact_hit\":false,\"name_exact_matches\":[],\"name_fuzzy_hit\":false,\"name_fuzzy_matches\":[],\"list_state\":{\"source\":\"OFAC SDN (Specially Designated Nationals and Blocked Persons)\",\"source_url\":\"https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.CSV\",\"published_date\":\"2026-08-20\",\"fetched_at\":\"2026-08-20T23:42:38Z\",\"content_sha256\":\"50213298d936901a1aaad7bb19c968dab9e82fa07e8c808aacfae8fcea3d870e\",\"entry_count\":19249,\"age_days\":0,\"stale\":false},\"error\":null},\"consolidated\":{\"list_available\":true,\"address_hit\":false,\"address_matches\":[],\"name_exact_hit\":false,\"name_exact_matches\":[],\"name_fuzzy_hit\":false,\"name_fuzzy_matches\":[],\"list_state\":{\"source\":\"OFAC Consolidated (non-SDN) Sanctions List\",\"source_url\":\"https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/CONS_PRIM.CSV\",\"published_date\":\"2026-08-20\",\"fetched_at\":\"2026-08-20T23:42:41Z\",\"content_sha256\":\"5a629469398539aca2d180a086543e2161d1203fb2a3c9c737b1d682544df5b1\",\"entry_count\":481,\"age_days\":0,\"stale\":false},\"error\":null}},\"list_state\":{\"sdn\":{\"source\":\"OFAC SDN (Specially Designated Nationals and Blocked Persons)\",\"source_url\":\"https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.CSV\",\"published_date\":\"2026-08-20\",\"fetched_at\":\"2026-08-20T23:42:38Z\",\"content_sha256\":\"50213298d936901a1aaad7bb19c968dab9e82fa07e8c808aacfae8fcea3d870e\",\"entry_count\":19249,\"age_days\":0,\"stale\":false},\"consolidated\":{\"source\":\"OFAC Consolidated (non-SDN) Sanctions List\",\"source_url\":\"https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/CONS_PRIM.CSV\",\"published_date\":\"2026-08-20\",\"fetched_at\":\"2026-08-20T23:42:41Z\",\"content_sha256\":\"5a629469398539aca2d180a086543e2161d1203fb2a3c9c737b1d682544df5b1\",\"entry_count\":481,\"age_days\":0,\"stale\":false}},\"retrieved_at\":\"2026-08-21T03:55:07Z\",\"methodology\":\"ss-v1\",\"input_hashes\":{\"sdn\":\"0x9bcbbaa69c4040ffc3513afab8080366074718c49a18071fc2c9fd865af6f8d4\",\"consolidated\":\"0xeee09b9059da1fb85d29fdc01bd7e7c6d3b8d76d3712a5cd7937e2bb66d0469b\"},\"source\":\"OFAC SDN + OFAC Consolidated (non-SDN) via sanctionslistservice.ofac.treas.gov (official Treasury exports)\",\"error\":null},\"broadcast\":{\"ok\":false,\"tx\":null,\"delivered\":0,\"note\":\"broadcast disabled (SANCTIONS_SCREEN_BROADCAST=0)\"},\"attestation\":{\"payloadHash\":\"0xbe58daa362cf94a4b4d6dc90c8415c306c06d69eedb5f599a69e14e62cc79464\",\"payloadLength\":2720,\"deadline\":2102644507,\"signer\":\"0x344ECaCDe6566294c31397445c98b62a3EEEA456\",\"signature\":\"0xb63cf806e4d74bc8323de684f502ceda8c04e2e3bbc049dc9d631bd276214dac02dfbb22d624b28deff1359b857e5110247d4c2f7e147232f2fddaca0a084ed21b\",\"domain\":{\"name\":\"BYTE Library\",\"version\":\"1\",\"chainId\":421614,\"verifyingContract\":\"0x44729bB148F46d8Db509E47b0453edc271e06e95\"}}}\n"
+}

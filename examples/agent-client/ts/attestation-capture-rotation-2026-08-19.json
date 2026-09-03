@@ -1,0 +1,55 @@
+{
+  "capturedAt": "2026-08-19T23:19:57.251Z",
+  "request": {
+    "url": "https://x402.payperbyte.io/feeds/address-reputation",
+    "method": "POST",
+    "body": {
+      "domain": "payperbyte.io",
+      "address": "0xffFf4B8Da8C165B556326453446F6940C8AFE0DB",
+      "chain": "base"
+    }
+  },
+  "payer": "0x91B1690b95F4e70c4DAB60f63068E8C34ef9A6Db",
+  "status": 200,
+  "headers": {
+    "access-control-allow-origin": "*",
+    "access-control-expose-headers": "X-BYTE-Attestation, X-BYTE-Disclaimer-Category, PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-PAYMENT-RESPONSE, Content-Length",
+    "alt-svc": "h3=\":443\"; ma=86400",
+    "cf-cache-status": "DYNAMIC",
+    "cf-ray": "a2dce2338b77d941-MIA",
+    "connection": "keep-alive",
+    "content-encoding": "br",
+    "content-type": "application/json; charset=utf-8",
+    "date": "Wed, 19 Aug 2026 23:19:57 GMT",
+    "etag": "W/\"a34-HbVcgSdut3xpdeFizU2h08fgkZ8\"",
+    "nel": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}",
+    "payment-response": "eyJzdWNjZXNzIjp0cnVlLCJwYXllciI6IjB4OTFCMTY5MGI5NUY0ZTcwYzREQUI2MGY2MzA2OEU4QzM0ZWY5QTZEYiIsInRyYW5zYWN0aW9uIjoiMHg5ZjUzYTQzMGQxZTkxNWI0M2IyNjY4NzlmYWFjNTNhODlkNDhmMGUxN2MyZTJiOGY5N2IyMTE4YzI4MDU5M2MxIiwibmV0d29yayI6ImVpcDE1NTo4NDUzIn0=",
+    "report-to": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=qiVPJRkS7jEVeDk1QYNO5MLJVqaab9rz29wDLXRhxW%2FGtwV3jwYxzMIO1%2FeRcAdizxrBOVAmmFvczJ3BYFZuk4JFKNi2Y1XWM9JObsHsyMX7aqXH1g%2F1%2FhRqa4MJwrUHj%2BQ2tyE%3D\"}]}",
+    "server": "cloudflare",
+    "transfer-encoding": "chunked",
+    "x-byte-attestation": "{\"alg\":\"EIP712-PayloadAttestation\",\"domain\":{\"name\":\"BYTE Library\",\"version\":\"1\",\"chainId\":421614,\"verifyingContract\":\"0x44729bB148F46d8Db509E47b0453edc271e06e95\"},\"publisher\":\"0xB48CCc9e3ab67041e3b5D09700138E45cda6AeA8\",\"payloadHash\":\"0x6d2392689b246c23c9ae43a8cbbd9105ab790f82901a49c03f792041774539cb\",\"payloadLength\":2612,\"deadline\":1787181896,\"signature\":\"0x0857f47d0daad199a0b21ecbfa5e033492b70d5c9d5e15fcc4f55e09bcf4ac0720a70e0c540e013c525eae76b786e92a26ef64a8486944c8b5f3911f4e9bc1b21b\"}",
+    "x-byte-disclaimer-category": "commerce"
+  },
+  "settle": {
+    "success": true,
+    "payer": "0x91B1690b95F4e70c4DAB60f63068E8C34ef9A6Db",
+    "transaction": "0x9f53a430d1e915b43b266879faac53a89d48f0e17c2e2b8f97b2118c280593c1",
+    "network": "eip155:8453"
+  },
+  "attestation": {
+    "alg": "EIP712-PayloadAttestation",
+    "domain": {
+      "name": "BYTE Library",
+      "version": "1",
+      "chainId": 421614,
+      "verifyingContract": "0x44729bB148F46d8Db509E47b0453edc271e06e95"
+    },
+    "publisher": "0xB48CCc9e3ab67041e3b5D09700138E45cda6AeA8",
+    "payloadHash": "0x6d2392689b246c23c9ae43a8cbbd9105ab790f82901a49c03f792041774539cb",
+    "payloadLength": 2612,
+    "deadline": 1787181896,
+    "signature": "0x0857f47d0daad199a0b21ecbfa5e033492b70d5c9d5e15fcc4f55e09bcf4ac0720a70e0c540e013c525eae76b786e92a26ef64a8486944c8b5f3911f4e9bc1b21b"
+  },
+  "computedKeccak256": "0x6d2392689b246c23c9ae43a8cbbd9105ab790f82901a49c03f792041774539cb",
+  "body": "{\"answer\":{\"v\":\"address-reputation/v1\",\"ts\":1787181579,\"query\":{\"domain\":\"payperbyte.io\",\"address\":\"0xffff4b8da8c165b556326453446f6940c8afe0db\",\"amount\":0,\"chain\":\"base\"},\"verdict\":\"ALLOW\",\"score\":100,\"reasons\":[\"domain registration age unknown\",\"valid HTTPS certificate\",\"domain has mail (MX) records\",\"archived web history spans ~4y\",\"receiving address has on-chain history on Base mainnet (tx_count=1)\",\"receiving address is a deployed contract\"],\"signals\":{\"domain\":{\"rdap\":{\"creation_date\":null,\"age_days\":null,\"registrar\":null,\"source\":\"https://rdap.org/domain/payperbyte.io\",\"error\":\"domain not found in RDAP\"},\"tls\":{\"has_https\":true,\"cert_valid\":true,\"issuer\":\"Let's Encrypt\",\"not_before\":\"Jun 26 22:35:07 2026 GMT\",\"not_after\":\"Sep 24 22:35:06 2026 GMT\",\"cert_age_days\":54,\"error\":null},\"dns\":{\"a_record\":true,\"mx_record\":true,\"source\":\"https://dns.google/resolve\",\"error\":null},\"wayback\":{\"first_seen\":\"2021-12-18T20:00:46Z\",\"age_days\":1705,\"source\":\"http://web.archive.org/cdx/search/cdx?url=payperbyte.io&output=json&limit=1&sort=ascending&fl=timestamp\",\"error\":null}},\"onchain\":{\"chain\":\"base\",\"chain_label\":\"Base mainnet\",\"chain_id\":8453,\"is_testnet\":false,\"address\":\"0xffff4b8da8c165b556326453446f6940c8afe0db\",\"tx_count\":1,\"balance_wei\":0,\"balance_eth\":0.0,\"is_contract\":true,\"is_delegated_eoa\":false,\"zero_history\":false,\"code_size\":171,\"latest_block\":50196112,\"source\":\"https://mainnet.base.org\",\"error\":null},\"blocklist\":{\"address_hit\":false,\"domain_hit\":false,\"source\":null,\"reason\":null,\"hits\":[],\"feed_status\":{\"seed_addresses\":1,\"seed_domains\":1,\"bulk_feeds\":\"off\",\"urlhaus_api\":\"off\"}}},\"retrieved_at\":\"2026-08-19T23:19:39Z\",\"methodology\":\"ar-v1\",\"input_hashes\":{\"domain\":\"0xa324f4b9def207b5bc19e93e089f09f90b139ce61264f8b7da79885b8f32ba90\",\"onchain\":\"0xa237a8a55d3f8cef20a692787398b6927c54763fffb99bf2e3bf53ce2a5449d7\",\"blocklist\":\"0x7efbc0b52602dbe7c126366ea7543df21275d2d56f321836378bfd143b189552\"},\"source\":\"rdap.org + live TLS + dns.google + web.archive.org + public RPC + curated blocklist\",\"error\":null},\"broadcast\":{\"ok\":false,\"tx\":null,\"delivered\":0,\"note\":\"broadcast disabled (ADDRESS_REP_BROADCAST=0)\"},\"attestation\":{\"payloadHash\":\"0x9bf3a7648eca5950a364f462539a5a03372bafee8b40578d16b50c8d4e00db59\",\"payloadLength\":2025,\"deadline\":1787185196,\"signer\":\"0x670444bE8515C63c50166EbcD0E5b23c578BbE04\",\"signature\":\"0xecaa16fc8790164448f937f0d265a46b252fdf6a7b1d99062d9cc6210fa070e440334965228c2d546de544d2f447d97f167b6011e84be17dba799e84fbae95ba1c\",\"domain\":{\"name\":\"BYTE Library\",\"version\":\"1\",\"chainId\":421614,\"verifyingContract\":\"0x44729bB148F46d8Db509E47b0453edc271e06e95\"}}}\n"
+}

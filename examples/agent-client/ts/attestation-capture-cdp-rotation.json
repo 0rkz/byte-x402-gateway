@@ -1,0 +1,55 @@
+{
+  "capturedAt": "2026-08-20T01:22:12.207Z",
+  "request": {
+    "url": "https://x402.payperbyte.io/feeds/address-reputation",
+    "method": "POST",
+    "body": {
+      "domain": "payperbyte.io",
+      "address": "0xffFf4B8Da8C165B556326453446F6940C8AFE0DB",
+      "chain": "base"
+    }
+  },
+  "payer": "0x91B1690b95F4e70c4DAB60f63068E8C34ef9A6Db",
+  "status": 200,
+  "headers": {
+    "access-control-allow-origin": "*",
+    "access-control-expose-headers": "X-BYTE-Attestation, X-BYTE-Disclaimer-Category, PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-PAYMENT-RESPONSE, Content-Length",
+    "alt-svc": "h3=\":443\"; ma=86400",
+    "cf-cache-status": "DYNAMIC",
+    "cf-ray": "a2dd9545ba9ddd05-MIA",
+    "connection": "keep-alive",
+    "content-encoding": "br",
+    "content-type": "application/json; charset=utf-8",
+    "date": "Thu, 20 Aug 2026 01:22:12 GMT",
+    "etag": "W/\"a9b-eZ1/dhFMRhE7xk/DjD50N6EPxA8\"",
+    "nel": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}",
+    "payment-response": "eyJzdWNjZXNzIjp0cnVlLCJwYXllciI6IjB4OTFCMTY5MGI5NUY0ZTcwYzREQUI2MGY2MzA2OEU4QzM0ZWY5QTZEYiIsInRyYW5zYWN0aW9uIjoiMHhhMzMyY2M5ZWRhNWEwMzgwYjIxODA5OGQ4NjdlZDIyYzQ3MzVkNGYzOGIwMmMyY2RiMmVmODZhMWM1ZGIyZmM3IiwibmV0d29yayI6ImVpcDE1NTo4NDUzIn0=",
+    "report-to": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=n5mDmMIEVyt1S8PismjAbNRRcY4n2Jg%2FT0B0DHbrK47st7OMn1pbBUeu1IWSSHc6t%2BV24RBvee8VCGDkwSXjptcEAheze36cE98S0ghp5VkLYttBoV7%2BTc5YKSeKymzVFbi1AoM%3D\"}]}",
+    "server": "cloudflare",
+    "transfer-encoding": "chunked",
+    "x-byte-attestation": "{\"alg\":\"EIP712-PayloadAttestation\",\"domain\":{\"name\":\"BYTE Library\",\"version\":\"1\",\"chainId\":421614,\"verifyingContract\":\"0x44729bB148F46d8Db509E47b0453edc271e06e95\"},\"publisher\":\"0xB48CCc9e3ab67041e3b5D09700138E45cda6AeA8\",\"payloadHash\":\"0x9ad60258e42808fa6ae6489551c814e1322033ed1b230310876f0009cd079680\",\"payloadLength\":2715,\"deadline\":1787189231,\"signature\":\"0x48f5448f5a6bdecb55790698444b10c61d2dd6198c260a8024e9a38ff24a97b6032409ba81daf19467b33114e608b6e16008370044c13264b4c651470e0f5bb21c\"}",
+    "x-byte-disclaimer-category": "commerce"
+  },
+  "settle": {
+    "success": true,
+    "payer": "0x91B1690b95F4e70c4DAB60f63068E8C34ef9A6Db",
+    "transaction": "0xa332cc9eda5a0380b218098d867ed22c4735d4f38b02c2cdb2ef86a1c5db2fc7",
+    "network": "eip155:8453"
+  },
+  "attestation": {
+    "alg": "EIP712-PayloadAttestation",
+    "domain": {
+      "name": "BYTE Library",
+      "version": "1",
+      "chainId": 421614,
+      "verifyingContract": "0x44729bB148F46d8Db509E47b0453edc271e06e95"
+    },
+    "publisher": "0xB48CCc9e3ab67041e3b5D09700138E45cda6AeA8",
+    "payloadHash": "0x9ad60258e42808fa6ae6489551c814e1322033ed1b230310876f0009cd079680",
+    "payloadLength": 2715,
+    "deadline": 1787189231,
+    "signature": "0x48f5448f5a6bdecb55790698444b10c61d2dd6198c260a8024e9a38ff24a97b6032409ba81daf19467b33114e608b6e16008370044c13264b4c651470e0f5bb21c"
+  },
+  "computedKeccak256": "0x9ad60258e42808fa6ae6489551c814e1322033ed1b230310876f0009cd079680",
+  "body": "{\"answer\":{\"v\":\"address-reputation/v1\",\"ts\":1787188931,\"query\":{\"domain\":\"payperbyte.io\",\"address\":\"0xffff4b8da8c165b556326453446f6940c8afe0db\",\"amount\":0,\"chain\":\"base\"},\"verdict\":\"ALLOW\",\"score\":80,\"reasons\":[\"domain registration age unknown\",\"valid HTTPS certificate\",\"domain has mail (MX) records\",\"web-archive history could not be checked (source error)\",\"receiving address has on-chain history on Base mainnet (tx_count=1)\",\"receiving address is a deployed contract\"],\"signals\":{\"domain\":{\"rdap\":{\"creation_date\":null,\"age_days\":null,\"registrar\":null,\"source\":\"https://rdap.org/domain/payperbyte.io\",\"error\":\"domain not found in RDAP\"},\"tls\":{\"has_https\":true,\"cert_valid\":true,\"issuer\":\"Let's Encrypt\",\"not_before\":\"Jun 26 22:35:07 2026 GMT\",\"not_after\":\"Sep 24 22:35:06 2026 GMT\",\"cert_age_days\":54,\"error\":null},\"dns\":{\"a_record\":true,\"mx_record\":true,\"source\":\"https://dns.google/resolve\",\"error\":null},\"wayback\":{\"first_seen\":null,\"age_days\":null,\"source\":\"http://web.archive.org/cdx/search/cdx?url=payperbyte.io&output=json&limit=1&sort=ascending&fl=timestamp\",\"error\":\"ReadTimeout: HTTPConnectionPool(host='web.archive.org', port=80): Read timed out. (read timeout=25)\"}},\"onchain\":{\"chain\":\"base\",\"chain_label\":\"Base mainnet\",\"chain_id\":8453,\"is_testnet\":false,\"address\":\"0xffff4b8da8c165b556326453446f6940c8afe0db\",\"tx_count\":1,\"balance_wei\":0,\"balance_eth\":0.0,\"is_contract\":true,\"is_delegated_eoa\":false,\"zero_history\":false,\"code_size\":171,\"latest_block\":50199779,\"source\":\"https://mainnet.base.org\",\"error\":null},\"blocklist\":{\"address_hit\":false,\"domain_hit\":false,\"source\":null,\"reason\":null,\"hits\":[],\"feed_status\":{\"seed_addresses\":1,\"seed_domains\":1,\"bulk_feeds\":\"off\",\"urlhaus_api\":\"off\"}}},\"retrieved_at\":\"2026-08-20T01:22:11Z\",\"methodology\":\"ar-v1\",\"input_hashes\":{\"domain\":\"0x518dc83da7e1daf2ea951c08fac9e68c958a2ff8de419232f9f618776d5de37b\",\"onchain\":\"0xa37827433e5367fffce0182422adb080235d9ae0c83b03d31e24429319033bb9\",\"blocklist\":\"0x7efbc0b52602dbe7c126366ea7543df21275d2d56f321836378bfd143b189552\"},\"source\":\"rdap.org + live TLS + dns.google + web.archive.org + public RPC + curated blocklist\",\"error\":null},\"broadcast\":{\"ok\":false,\"tx\":null,\"delivered\":0,\"note\":\"broadcast disabled (ADDRESS_REP_BROADCAST=0)\"},\"attestation\":{\"payloadHash\":\"0xb4e6301b0fa5f0bbd44007e93a1616962e1884176ad87149216c9f666c180872\",\"payloadLength\":2128,\"deadline\":1787192531,\"signer\":\"0x670444bE8515C63c50166EbcD0E5b23c578BbE04\",\"signature\":\"0xf526fe940c771e4b3b35df9c372e731d1257ca495df93f4d2b72b31fedafd95004b3d669eb68f213ff7a21b0f43974c11675349cc442982b8f6daf575a04b8bf1c\",\"domain\":{\"name\":\"BYTE Library\",\"version\":\"1\",\"chainId\":421614,\"verifyingContract\":\"0x44729bB148F46d8Db509E47b0453edc271e06e95\"}}}\n"
+}
