@@ -8,7 +8,20 @@
 # exits non-zero — a real leak (exit 1) or an infra error (exit 2) both stop the
 # restart. Use this instead of a bare `systemctl --user restart byte-x402`.
 set -e
-cd "$(dirname "$0")/.."
+# `readlink -f` resolves a SYMLINKED entry point to its target before taking the
+# parent. Without it this resolves the LINK's parent — and ~/byte/scripts is an
+# established farm of 9 committed symlinks, while ~/byte is itself a git repo
+# whose .gitignore:6 is `/*`, i.e. it ignores every service directory. A farm
+# symlink to this script therefore guarded ~/byte, where the gateway tree is
+# gitignored, so every check below passed while an arbitrarily dirty gateway
+# shipped. FD reproduced it 2026-09-02; on that date the bypass was stopped only
+# by one incidental untracked file under ~/byte/scripts. All four sibling guards
+# had this; the gateway they were ported FROM did not.
+cd "$(dirname "$(readlink -f "$0")")/.."
+# An exported GIT_DIR/GIT_WORK_TREE makes every git call below answer about a
+# FOREIGN repository while `--show-toplevel` still equals `pwd -P` — the guard
+# passes against someone else's index. Fail-open; unset before asking git anything.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 
 # ── dist/ must be buildable ONLY from committed source — fail closed, BEFORE
 # the build. `npm run preship` below BUILDS, so a check placed after it would
@@ -38,6 +51,15 @@ echo "[deploy] verifying dist/ can only be built from committed source…"
 # aborts claiming "uncommitted MODIFIED source" — a true halt for a false
 # reason, buried under git's usage text. Fail closed, but say why.
 git rev-parse --git-dir >/dev/null 2>&1 || { echo "[deploy] ABORT: cannot verify provenance (not a git repo or git unavailable)"; exit 1; }
+# Back-ported 2026-09-02 from the four ported guards, which had it and this one
+# did not. Every check below is relative to the CURRENT directory, so if git
+# resolves to a different repository than the one we are about to build and
+# restart, the provenance we prove and the artifact we ship belong to different
+# trees — clean-looking, and wrong. That happens whenever this script is invoked
+# from an unexpected cwd or through a symlink/worktree that lands elsewhere.
+# `cd "$(dirname "$0")/.."` above makes it *likely* correct; this makes it *checked*.
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "[deploy] ABORT: cannot resolve the repository root"; exit 1; }
+[ "$ROOT" = "$(pwd -P)" ] || { echo "[deploy] ABORT: git resolved to $ROOT, not $(pwd -P) — refusing to guard a different repo"; exit 1; }
 git diff --quiet HEAD -- src/ scripts/ tsconfig.json package.json package-lock.json .gitignore 2>/dev/null || { echo "[deploy] ABORT: uncommitted MODIFIED source under src/ or scripts/ — commit or stash before deploying"; exit 1; }
 # Capture separately so "git failed" and "git says clean" cannot be conflated.
 # Inline as `[ -z "$(git ls-files …)" ]` this check is FAIL-OPEN: if git errors,
@@ -48,6 +70,31 @@ UNTRACKED=$(git ls-files --others --exclude-standard -- src/ scripts/ tsconfig.j
 
 echo "[deploy] running pre-ship gate-engagement check…"
 npm run preship
+
+# Back-ported 2026-09-02 from the four ported guards. `tsc` can exit 0 having
+# emitted nothing useful — a partial write, a full disk — and `set -e` sees
+# success. Without this assert the script would go straight to
+# `systemctl restart` and publish whatever was already on disk.
+#
+# ⚠️ WHAT THIS DOES NOT CATCH (FD, 2026-09-02 — do not read more into it):
+# `-s` proves the file is non-empty, NOT that this build produced it. `npm run
+# build` is bare `tsc` with no prebuild and no clean, so dist/ is NEVER emptied:
+# a wrong outDir or a no-emit build leaves YESTERDAY's dist/ in place and every
+# assert below passes on it. FD demonstrated exactly that. The siblings close it
+# with `STAMP=$(mktemp)` before the build and `[ "$a" -nt "$STAMP" ]` here;
+# that freshness check is a tracked follow-up (HIGH-3), not present yet.
+# Likewise only 2 of the 8 modules src/index.ts loads are asserted — attestation
+# (EIP-712 signer) and receipt-emitter (HMAC) are not (MEDIUM-5).
+#
+# Both files are named deliberately. dist/index.js alone is NOT sufficient: on
+# 2026-09-02 a discovery-api deploy changed live pricing on four public feeds
+# while its dist/index.js stayed BYTE-IDENTICAL, because the change compiled to
+# dist/lib/feeds.js. This gateway's routes happening to live in src/index.ts is
+# luck, not design; src/lib/config.ts carries the feed catalogue and the
+# regime-signal upstream pin, and it compiles here.
+for a in dist/index.js dist/lib/config.js; do
+  [ -s "$a" ] || { echo "[deploy] ABORT: build did not produce a non-empty $a — refusing to restart onto a stale artifact"; exit 1; }
+done
 
 echo "[deploy] gate passed — restarting byte-x402"
 systemctl --user restart byte-x402
