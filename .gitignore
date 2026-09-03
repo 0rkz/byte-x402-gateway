@@ -16,3 +16,11 @@ deploy/base/x402list.txt
 # The existing "dist/" rule does not cover these; this repo is PUBLIC and they are
 # known-buggy compiled output with no reason to ship.
 dist.*.bak/
+
+# Raw paid-response captures. A future capture tool that records REQUEST HEADERS
+# would embed an X-PAYMENT value — an unsettled EIP-3009 transferWithAuthorization
+# is replayable until spent. Ignored everywhere so every commit of one is a
+# deliberate `git add -f` after a scan. Does NOT affect the four already tracked
+# in d912f98 (founder-accepted 2026-09-02, scanned clean: no X-PAYMENT value, no
+# request headers, no private-key shape); gitignore never applies to tracked files.
+attestation-capture*.json
