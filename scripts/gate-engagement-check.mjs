@@ -72,6 +72,40 @@ const FREE_ROUTES = ["/health", "/feeds", "/openapi.json", "/.well-known/x402.js
 // 200 (upstream up) and 502 (upstream down) are both PASSES; 402/403 means the
 // payment gate is over-blocking a free route, and 404/405 means the route was
 // dropped or shadowed. Both are the failures worth blocking a deploy for.
+// Two real client User-Agents, because a UA-conditional edge rule is invisible
+// to every other check here (they all speak Node's fetch).
+//
+// CORRECTED 2026-09-02: an earlier version of this comment claimed the stdlib
+// token is "what sdk/python/byte/verify.py sends today". That was wrong when
+// written — verify.py:200 sends `payperbyte-sdk/<version>` (added the same day,
+// for this exact Cloudflare reason) and its verify leg WORKS. Do not restore
+// the old claim; it sent operators to fix an SDK that was already correct.
+//
+// Both tokens are probed because they fail differently:
+//   SDK_UA blocked      -> P0: our own published client cannot reach us.
+//   LEGACY_URLLIB_UA    -> a third-party buyer calling urlopen() directly is
+//                          turned away. Still a product defect, not a P0.
+// The version suffix is a fixed historical token, not a live value: the CF rule
+// matches the Python-urllib prefix, so bumping it tracks nothing.
+const LEGACY_URLLIB_UA = "Python-urllib/3.12";
+const SDK_UA = "payperbyte-sdk/probe";
+const UA_TOKENS = [SDK_UA, LEGACY_URLLIB_UA];
+
+// Free discovery surfaces that MUST answer a real client, plus one paid route
+// that must still answer 402 rather than 403 (a WAF block on a paid route is
+// indistinguishable from "gate engaged" if you only look at "not 200").
+// expect is a SET, matching assertPaidClosed()'s {402,503,404} rather than a
+// single status. The harness spawns the gateway with an intentionally
+// unreachable FACILITATOR_URL, so every paid route answers 503
+// (payment_unavailable) by design — asserting 402 alone hard-failed preship,
+// deploy-gateway.sh and CI on a clean tree. It would also misreport a genuine
+// production facilitator outage in --url mode as a WAF block.
+const UA_PROBES = [
+  { path: "/feeds", expect: [200] },
+  { path: "/.well-known/x402.json", expect: [200] },
+  { path: "/feeds/weather", expect: [402, 503] },
+];
+
 const PROXIED_FREE_ROUTES = [
   "/methodology",
   "/track-record",
@@ -123,7 +157,7 @@ async function waitForHealth(base, ms = 20000) {
 /** One unpaid probe with a small retry. Returns { status, hasReceipt, bodySample }
  *  or { netError } after retries — callers treat netError as INFRA (exit 2), never
  *  a leak, so a flaky CI runner / remote hiccup can't masquerade as a gate failure. */
-async function probe(base, method, p, withBody = false, timeoutMs = 8000) {
+async function probe(base, method, p, withBody = false, timeoutMs = 8000, ua = null) {
   const init = { method, redirect: "manual" };
   if (withBody || method === "POST") {
     init.headers = { "content-type": "application/json" };
@@ -132,7 +166,7 @@ async function probe(base, method, p, withBody = false, timeoutMs = 8000) {
   let lastErr;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const r = await fetch(`${base}${p}`, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+      const r = await fetch(`${base}${p}`, { ...init, headers: ua ? { ...(init.headers || {}), "User-Agent": ua } : init.headers, signal: AbortSignal.timeout(timeoutMs) });
       const hasReceipt = r.headers.has("x-byte-attestation");
       let bodySample = "";
       try {
@@ -317,6 +351,46 @@ async function runChecks(base) {
     } else {
       fail(`receipt-id validator did NOT reject a traversal-shaped id: got ${res.status} (body: ${body.slice(0, 120)}) — a malformed id must never reach the upstream`);
     }
+  }
+
+  // ── 1c. edge reachability by a REAL client UA, not just ours ──────────────
+  // Every check in this file speaks fetch/curl, and every one of them passed
+  // green on 2026-09-02 while Cloudflare returned 403 to `Python-urllib` on
+  // EVERY path — including /health and /feeds. Our own Python SDK's verify leg
+  // (sdk/python/byte/verify.py:168, urllib.request.urlopen with no custom UA)
+  // could not fetch anything. A deploy check that only ever speaks its own
+  // dialect cannot see a UA-conditional edge rule.
+  //
+  // A 403 here is NOT a catalog mismatch and must never be reported as one —
+  // it is the Cloudflare Browser Integrity Check / a WAF UA rule, at the edge,
+  // with the origin healthy. Say so in the message so nobody debugs the app.
+  // Only meaningful against the real host: a 127.0.0.1 local spawn never
+  // traverses Cloudflare, so these probes could not detect an edge rule there —
+  // they would pass vacuously. Skip visibly rather than bank a false green.
+  if (!LIVE_URL) {
+    warn("UA/edge probes SKIPPED: local-spawn base does not traverse the edge, so a WAF rule is undetectable here. Run with --url against the live host to exercise them.");
+  } else
+  for (const { path: p, expect } of UA_PROBES) {
+   for (const ua of UA_TOKENS) {
+    const res = await probe(base, "GET", p, false, 20_000, ua);
+    const want = expect.join("/");
+    if (res.netError) {
+      infra(`UA probe GET ${p} [${ua}]: ${res.netError}`);
+    } else if (res.status === 403 || res.status === 429) {
+      fail(
+        `UA probe GET ${p} returned ${res.status} to User-Agent "${ua}" — a Cloudflare ` +
+          `Browser Integrity Check / WAF UA rule is turning away a real client at the EDGE ` +
+          `(the origin is fine). This is NOT a catalog mismatch and NOT a gate anomaly.` +
+          (ua === SDK_UA
+            ? ` This UA is what our own Python SDK sends (sdk/python/byte/verify.py:200) — a block here is a P0 product outage.`
+            : ` This is urllib's DEFAULT UA, i.e. a third-party buyer calling urlopen directly.`),
+      );
+    } else if (expect.includes(res.status)) {
+      pass(`UA probe reachable: GET ${p} [${ua}] → ${res.status}`);
+    } else {
+      fail(`UA probe GET ${p} [${ua}] returned ${res.status}, expected ${want}`);
+    }
+   }
   }
 
   // ── 2. every advertised payable op must FAIL CLOSED unpaid — canonical + variants ──
