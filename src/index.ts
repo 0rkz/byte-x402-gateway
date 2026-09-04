@@ -14,6 +14,7 @@ import express from "express";
 import helmet from "helmet";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
+import { mirrorPaymentRequiredBody } from "./lib/payment-required-body.js";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient, type FacilitatorConfig } from "@x402/core/server";
@@ -1003,7 +1004,14 @@ app.use((req, res, next) => {
       };
     }
   }
-  if (activePaymentMiddleware) return activePaymentMiddleware(req, res, next);
+  if (activePaymentMiddleware) {
+    // An unpaid request gets its 402 from the middleware with the challenge in
+    // the PAYMENT-REQUIRED header and `{}` in the body; mirror the decoded
+    // header into that body so body-reading clients see the same challenge.
+    // Inert on every other response (see src/lib/payment-required-body.ts).
+    mirrorPaymentRequiredBody(res);
+    return activePaymentMiddleware(req, res, next);
+  }
   if (isPaidRoute(req)) {
     return res.status(503).json({
       error: "payment_unavailable",
