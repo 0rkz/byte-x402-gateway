@@ -21,14 +21,23 @@
  * running gateway — never hard-code the amount here.
  */
 import { config, feedRegistry, networkInfo } from "./config.js";
+import { PER_CALL_PRICING } from "./pricing-copy.js";
+import {
+  POST_ORACLES,
+  ORACLE_BODY_ATTESTATION,
+  RECEIPT_PROOF_ROUTE,
+  RECEIPT_ID_DOCS_URL,
+  type BodyAttestation,
+} from "./post-oracles.js";
 
 /**
  * Feeds that are exposed as synchronous POST request-response oracles (carry a
- * JSON request body), not GET broadcast pulls. Must stay in sync with
- * POST_ORACLES in index.ts — drift here causes method/param mismatch between
- * the OpenAPI contract and the live routes. usc-statute is dual-pattern: it is
- * a publisher-backed feed AND a POST oracle, so it gets BOTH a GET (latest
- * broadcast) and a POST (synchronous query) operation below.
+ * JSON request body), not GET broadcast pulls. This IS index.ts's POST_ORACLES
+ * (one Set, lib/post-oracles.ts, since 2026-10-07) — previously a hand-kept
+ * copy whose drift would cause method/param mismatch between the OpenAPI
+ * contract and the live routes. Publisher-backed oracles (runtime-eol,
+ * threat-intel) are dual-pattern: BOTH a GET (latest broadcast) and a POST
+ * (synchronous query) operation below.
  */
 // token-safety removed 2026-06-15: delisted, not in feedRegistry, so it never
 // appeared in the doc anyway — dropped here to stay in sync with POST_ORACLES
@@ -39,7 +48,7 @@ import { config, feedRegistry, networkInfo } from "./config.js";
 // buildOpenApiDoc()'s explicit `feed("liquidation-stream")` lookup throws
 // (feedRegistry has no entry for it), 500ing the free /openapi.json route —
 // caught by gate-engagement-check.mjs's free-route-reachable assertion.
-const POST_ORACLE_IDS = new Set(["address-reputation", "pkg-verdict", "sanctions-screen", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel", "merchant-screen", "cctp-attestation-latency", "regime-signal"]);
+const POST_ORACLE_IDS = POST_ORACLES;
 
 /** Per-oracle request-body schema, keyed by feed id. Each oracle takes a
  *  different question/claim/citation field plus optional on-chain delivery
@@ -1493,7 +1502,7 @@ function indexerFeedPaths(): Record<string, unknown> {
         responses: paidResponses(byteLibraryFeedSchema, f.priceAtomic),
       },
     };
-    // Dual-pattern feeds (usc-statute): add the synchronous POST oracle path.
+    // Dual-pattern feeds (runtime-eol, threat-intel): add the synchronous POST oracle path.
     if (POST_ORACLE_IDS.has(f.id)) {
       paths[f.endpoint].post = oraclePostOperation(f);
     }
@@ -1533,7 +1542,7 @@ const feedsCatalogSchema = {
     networks: { type: "array", items: { type: "string" } },
     facilitator: { type: "string" },
     asset: { type: "string" },
-    pricing: { type: "object", description: "Per-byte pricing model + floor." },
+    pricing: { type: "object", description: "Pricing model (\"fixed-per-call\"), a note, and the fallback-formula fields for a feed without an explicit price." },
     disclaimers: { type: "object", description: "Disclaimer header name + per-category text." },
     feeds: {
       type: "array",
@@ -1582,6 +1591,44 @@ export function buildOpenApiDoc() {
   // Feeds whose payload itself carries a LIVE per-feed EIP-712 attestation (a
   // distinct per-feed signer) — drives the honest "live per-feed provenance" claim.
   const attestedCount = feedRegistry.filter((f) => f.provenance === "eip712-attested").length;
+  // Feed list derived from the SAME registry GET /feeds serves (index.ts), so the
+  // description cannot drift as feeds are listed/delisted. The old hardcoded
+  // category list (crypto markets, DeFi yields, news, code-pulse, …) outlived
+  // the 2026-07-03 delists and was still public on 2026-10-07.
+  const feedIds = feedRegistry.map((f) => f.id).join(", ");
+  // x-guidance oracle lists, derived exactly as index.ts paymentRoutes gates them:
+  // POST for every registry feed in POST_ORACLES; publisher-backed ones ALSO get
+  // the gated GET. The hand-written list these replace still named the delisted
+  // usc-statute and omitted cctp-attestation-latency + regime-signal.
+  const postOracleIds = feedRegistry.filter((f) => POST_ORACLE_IDS.has(f.id)).map((f) => f.id);
+  const dualIds = feedRegistry.filter((f) => POST_ORACLE_IDS.has(f.id) && f.publisher).map((f) => f.id);
+  const andList = (ids: string[]) =>
+    ids.length <= 2 ? ids.join(" and ") : `${ids.slice(0, -1).join(", ")}, and ${ids[ids.length - 1]}`;
+  const dualSentence =
+    dualIds.length === 0
+      ? ""
+      : `${andList(dualIds)} ALSO serve${dualIds.length === 1 ? "s" : ""} a latest-broadcast GET on the same path. `;
+  // What each oracle's 200 BODY carries, from ORACLE_BODY_ATTESTATION (verified
+  // per upstream, see post-oracles.ts). The old clause "return their signed
+  // answer" was false for regime-signal (receipt: null in the 200) and only
+  // conditionally true for the "when-enabled" upstreams.
+  const byBody = (kind: BodyAttestation) => postOracleIds.filter((id) => ORACLE_BODY_ATTESTATION[id] === kind);
+  const isAre = (ids: string[], one: string, many: string) => (ids.length === 1 ? one : many);
+  const alwaysIds = byBody("always");
+  const enabledIds = byBody("when-enabled");
+  const receiptIds = byBody("receipt-after-settlement");
+  const bodySentences =
+    (alwaysIds.length === 0 ? "" :
+      `${andList(alwaysIds)} ${isAre(alwaysIds, "also embeds its", "also embed their")} own EIP-712 \`attestation\` ` +
+      "in the body (recover attestation.signer). ") +
+    (enabledIds.length === 0 ? "" :
+      `${andList(enabledIds)} ${isAre(enabledIds, "embeds", "embed")} one only when that feed's response ` +
+      "signing is enabled — check for the `attestation` field before relying on it. ") +
+    (receiptIds.length === 0 ? "" :
+      `${andList(receiptIds)} ${isAre(receiptIds, "returns", "return")} no body attestation (receipt: null): ` +
+      `${isAre(receiptIds, "its", "their")} signed DeliveryReceipt is minted out of band after settlement, ` +
+      `when receipt minting is enabled — fetch it via ${RECEIPT_PROOF_ROUTE} (id derivation: ` +
+      `${RECEIPT_ID_DOCS_URL}). `);
 
   return {
     openapi: "3.1.0",
@@ -1590,9 +1637,9 @@ export function buildOpenApiDoc() {
       version: "0.3.0",
       description:
         "Cryptographically attested, first-party data feeds for AI agents — " +
-        "covering crypto markets, DeFi yields, weather, earthquakes, news, " +
-        "code-pulse, threat-intel, address reputation, sanctions screening, and " +
-        "supply-chain verdicts. Every paid response carries EIP-712 receipts you " +
+        `currently: ${feedIds} (each at /feeds/<id>; the free GET /feeds catalog ` +
+        "is the live list with descriptions and prices). " +
+        "Every paid response carries EIP-712 receipts you " +
         "verify before acting: (1) a GATEWAY delivery-integrity receipt " +
         "(X-BYTE-Attestation header, signed by the PayPerByte gateway key) proving " +
         "these are exactly the bytes we served; and (2) on the " +
@@ -1607,23 +1654,17 @@ export function buildOpenApiDoc() {
         "third-party data source signed it — all keys are first-party PayPerByte. " +
         "Pay per call in USDC over x402 with no API keys — a " +
         "wallet, not a secret on the box. Settlement is on " +
-        `${networkInfo().label} (${config.network}). Price is per-feed, derived from expected ` +
-        "payload size at " +
-        `$${(Number(config.pricePerKBAtomic) / 1_000_000).toFixed(6)}/KB ` +
-        `(floor $${(Number(config.priceFloorAtomic) / 1_000_000).toFixed(6)}).`,
+        `${networkInfo().label} (${config.network}). ${PER_CALL_PRICING}`,
       "x-guidance":
         "Paid endpoints return HTTP 402 with x402 v2 payment requirements " +
         "in the `payment-required` header — pay the quoted USDC on " +
-        `${networkInfo().label} (network ${config.network}) and retry. Each feed has its own ` +
-        "price (see x-payment-info per operation); the catalog at GET /feeds " +
-        "(free, ungated) lists every feed with its computed price and " +
-        "expected payload size. POST oracle endpoints (address-reputation, " +
-        "sanctions-screen, pkg-verdict, reasoning-verdict, merchant-screen, " +
-        "usc-statute, runtime-eol, threat-intel, " +
-        "positioning-snapshot) require a JSON body and return their signed " +
+        `${networkInfo().label} (network ${config.network}) and retry. ${PER_CALL_PRICING} ` +
+        "The same amount is in x-payment-info per operation; the catalog at " +
+        `GET /feeds is free and ungated. POST oracle endpoints (${postOracleIds.join(", ")}) ` +
+        "require a JSON body and return their " +
         "answer SYNCHRONOUSLY in the 200 — see the requestBody/response schema " +
-        "per operation. usc-statute, runtime-eol, and threat-intel ALSO serve a " +
-        "latest-broadcast GET on the same path. Free, no payment: GET /feeds and " +
+        "per operation. Every paid 200 carries the gateway's signed X-BYTE-Attestation " +
+        `header. ${bodySentences}${dualSentence}Free, no payment: GET /feeds and ` +
         "GET /health.",
       "x-post-oracle-quickstart":
         "Raw-HTTP buy of a POST oracle (address-reputation) — two requests:\n\n" +
@@ -1671,7 +1712,7 @@ export function buildOpenApiDoc() {
           operationId: "getFeedsCatalog",
           summary: "Feed catalog (free) — every feed with price, accepted method(s), and expected size",
           description:
-            "The free, ungated catalog. Lists all feeds with computed price, expected payload " +
+            "The free, ungated catalog. Lists all feeds with their fixed per-call price, expected payload " +
             "size, provenance, disclaimer category, and accepted HTTP method(s). No x402 payment.",
           tags: ["Discovery"],
           security: [],

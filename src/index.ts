@@ -22,6 +22,8 @@ import type { ResourceServerExtension } from "@x402/core/types";
 import { config, feedRegistry, DISCLAIMER_TEXT, networkInfo, FEED_LIVE_URL, FEED_STALE_AFTER_S } from "./lib/config.js";
 import { normalizeReceiptId, isValidReceiptId, mapUpstreamStatus } from "./lib/receipt-id.js";
 import { buildOpenApiDoc, ORACLE_REQUEST_SCHEMAS, ORACLE_REQUEST_EXAMPLES, ORACLE_RESPONSE_EXAMPLES } from "./lib/openapi.js";
+import { x402ManifestDescription, agentCardDescription, agentRegistrationDescription, pricingLogLine } from "./lib/pricing-copy.js";
+import { POST_ORACLES } from "./lib/post-oracles.js";
 import { fetchDefiYields } from "./feeds/defi.js";
 import { fetchFeedPayload } from "./feeds/generic.js";
 import {
@@ -291,7 +293,9 @@ function buildAccepts(priceAtomic: string) {
 // in-session — see the delist comments in lib/config.ts feedRegistry and the
 // 410-Gone stubs below) — removed from POST_ORACLES so neither the payment
 // gate nor the body-validation middleware treats them as live.
-const POST_ORACLES = new Set(["address-reputation", "pkg-verdict", "sanctions-screen", "positioning-snapshot", "reasoning-verdict", "runtime-eol", "threat-intel", "merchant-screen", "cctp-attestation-latency", "regime-signal"]);
+// POST_ORACLES itself lives in lib/post-oracles.ts (2026-10-07) — the same Set
+// openapi.ts reads for its POST operations and x-guidance list, so the routes
+// and the published contract cannot drift apart.
 
 // ── Bazaar service metadata (PROD-15) ───────────────────────────────────────
 // CDP Bazaar catalogs `resource.serviceName` / `resource.tags` from the
@@ -1358,8 +1362,7 @@ function buildX402Manifest() {
   return {
     x402Version: 2,
     name: "PayPerByte",
-    description:
-      `Per-byte USDC data feeds + oracles for AI agents. First-party, with a verify-before-act EIP-712 receipt (authenticity + tamper-evidence, not data correctness); no token. Settlement on ${net.label}.`,
+    description: x402ManifestDescription(net.label),
     provider: { organization: "PayPerByte", url: "https://www.payperbyte.io" },
     network: config.network,
     status: net.status,
@@ -1420,8 +1423,7 @@ app.get("/.well-known/agent.json", discoveryLimiter, (_req, res) => {
   const net = networkInfo();
   res.json({
     name: "PayPerByte",
-    description:
-      `Per-byte USDC data feeds + oracles for AI agents — pay-per-call via x402, settled in USDC on ${net.label}. Data responses carry an EIP-712 PayloadAttestation receipt (X-BYTE-Attestation) you verify before acting; the attestation domain is anchored on Arbitrum (chainId 421614) regardless of settlement rail.`,
+    description: agentCardDescription(net.label),
     url: "https://x402.payperbyte.io",
     version: "0.3.0",
     provider: { organization: "PayPerByte", url: "https://www.payperbyte.io" },
@@ -1479,8 +1481,7 @@ app.get("/.well-known/agent-registration.json", discoveryLimiter, (_req, res) =>
   res.json({
     type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
     name: "PayPerByte",
-    description:
-      `Per-byte USDC data feeds and oracles for AI agents (display name: PayPerByte). ${feedRegistry.length} paid x402 resources served from https://x402.payperbyte.io, settled in USDC on Base mainnet (eip155:8453); flagship POST /feeds/address-reputation at $0.10. Every data response carries an EIP-712 PayloadAttestation receipt (X-BYTE-Attestation header) that callers verify before acting.`,
+    description: agentRegistrationDescription(feedRegistry.length),
     image: "https://raw.githubusercontent.com/0rkz/byte-mcp-server/main/assets/logo-400x400.png",
     services: [
       { name: "web", endpoint: "https://x402.payperbyte.io" },
@@ -2080,7 +2081,7 @@ app.get("/feeds/defi-yields", (_req, res) => {
  *
  * Re-list = fix the grounding source + disclose the egress path, restore the
  * proxy body, and re-add a feedRegistry entry so the payment gate covers it
- * (and re-add to POST_ORACLES + openapi POST_ORACLE_IDS). Until then the
+ * (and re-add to POST_ORACLES in lib/post-oracles.ts). Until then the
  * pre-ship gate-engagement check (scripts/gate-engagement-check.mjs) asserts
  * this route stays 404/410.
  */
@@ -2390,7 +2391,7 @@ app.post("/feeds/threat-intel", async (req, res) => {
  * payment gate would serve paid data free the moment its upstream came up).
  *
  * Re-list = restore the proxy body AND add a feedRegistry entry so the payment
- * gate covers it (and re-add it to POST_ORACLES + openapi POST_ORACLE_IDS).
+ * gate covers it (and re-add it to POST_ORACLES in lib/post-oracles.ts).
  * Until then the pre-ship gate-engagement check
  * (scripts/gate-engagement-check.mjs) asserts this route stays 404/410.
  */
@@ -2417,7 +2418,7 @@ app.post("/feeds/token-safety", (_req, res) => {
  *
  * Re-list = restore a live venue feed to the collector, restore the proxy
  * body, and re-add a feedRegistry entry so the payment gate covers it (and
- * re-add to POST_ORACLES + openapi POST_ORACLE_IDS). Until then the pre-ship
+ * re-add to POST_ORACLES in lib/post-oracles.ts). Until then the pre-ship
  * gate-engagement check (scripts/gate-engagement-check.mjs) asserts this
  * route stays 404/410.
  */
@@ -2682,7 +2683,7 @@ app.listen(config.port, config.host, () => {
     console.log(`[x402-gateway] Solana Network: ${config.solanaNetwork}`);
     console.log(`[x402-gateway] Solana PayTo: ${config.solanaPayTo}`);
   }
-  console.log(`[x402-gateway] Pricing: $${(Number(config.pricePerKBAtomic) / 1_000_000).toFixed(6)}/KB (floor $${(Number(config.priceFloorAtomic) / 1_000_000).toFixed(6)})`);
+  console.log(pricingLogLine(config.pricePerKBAtomic, config.priceFloorAtomic));
   console.log(`[x402-gateway] USDC asset: ${config.usdcAddress} (domain="${config.usdcDomainName}" v${config.usdcDomainVersion})`);
   console.log(`[x402-gateway] Facilitator: ${config.facilitatorUrl}`);
   console.log(`[x402-gateway] Feeds available: ${feedRegistry.length}`);

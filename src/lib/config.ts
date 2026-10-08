@@ -557,7 +557,8 @@ export const feedRegistry: FeedMetadata[] = [
   // INSUFFICIENT_DATA off a 7-week-stale archive. Its route in index.ts is now
   // a 410-Gone stub. NOT in this registry — no payment gate — until the
   // collector is restored with a live venue feed.
-  // positioning-snapshot: per-KB priced on expectedSizeBytes=7480 (~$0.037) — market data.
+  // positioning-snapshot: fixed $0.03/call via PRICE_OVERRIDES (T2 market data) —
+  // the override wins, so expectedSizeBytes=7480 does NOT set its price.
   bespokeFeed("positioning-snapshot", "Positioning Snapshot Oracle", "Cross-venue perp positioning (funding + open interest) from Hyperliquid, dYdX v4, Aevo; raw fields, abstains honestly where a venue lacks data.", "on-demand", 7480, "financial"),
   // agent-compute, agent-memory, agent-tools (Agent-Infrastructure Index) delisted 2026-07-03 (concentration cut)
   // cctp-attestation-latency — wired live 2026-08-25 (founder-approved,
